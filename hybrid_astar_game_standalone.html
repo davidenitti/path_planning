@@ -1,0 +1,1178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hybrid A* Keyboard Driver — Standalone</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #10151d;
+      --panel: #18212d;
+      --panel-2: #202c3b;
+      --text: #edf3fa;
+      --muted: #aebdcd;
+      --line: #34465b;
+      --accent: #5aa9ff;
+      --good: #61d68a;
+      --warn: #ffcb6b;
+      --bad: #ff7676;
+      --button: #26364a;
+      --button-active: #3c5877;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { min-height: 100%; }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 20% 0%, #1d2b3b 0, var(--bg) 38rem);
+      color: var(--text);
+    }
+
+    button, input, select { font: inherit; }
+
+    .app {
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: clamp(1.35rem, 2.5vw, 2rem);
+      line-height: 1.15;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
+    .status-stack {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--panel) 88%, transparent);
+      padding: 7px 11px;
+      font-size: 0.86rem;
+      white-space: nowrap;
+    }
+
+    .pill.good { border-color: color-mix(in srgb, var(--good) 65%, var(--line)); color: var(--good); }
+    .pill.bad { border-color: color-mix(in srgb, var(--bad) 65%, var(--line)); color: var(--bad); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(250px, 315px) minmax(0, 1fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 96%, transparent), color-mix(in srgb, var(--panel) 88%, transparent));
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.22);
+    }
+
+    aside {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+
+    fieldset {
+      border: 0;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 9px;
+    }
+
+    legend {
+      width: 100%;
+      padding: 0 0 8px;
+      margin-bottom: 2px;
+      border-bottom: 1px solid var(--line);
+      font-weight: 700;
+      font-size: 0.92rem;
+    }
+
+    label.row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 92px;
+      gap: 9px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    input[type="number"], select {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 6px 8px;
+      outline: none;
+    }
+
+    input:focus, select:focus, button:focus-visible, canvas:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .checks {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px 10px;
+      color: var(--muted);
+      font-size: 0.83rem;
+    }
+
+    .checks label { display: flex; align-items: center; gap: 6px; }
+
+    .button-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    button {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--button);
+      color: var(--text);
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+
+    button:hover { filter: brightness(1.09); }
+    button:active, button.active { background: var(--button-active); transform: translateY(1px); }
+    button.primary { background: #245d94; border-color: #3475b2; }
+    button.danger { background: #63313a; border-color: #8b4552; }
+
+    .controls-help {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.5;
+    }
+
+    kbd {
+      display: inline-block;
+      min-width: 1.65em;
+      padding: 1px 5px;
+      border: 1px solid #65758a;
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      background: #263447;
+      color: #fff;
+      text-align: center;
+      font-size: 0.78rem;
+    }
+
+    .drive-pad {
+      width: min(220px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-areas:
+        ". up ."
+        "left stop right"
+        ". down .";
+      gap: 7px;
+    }
+
+    .drive-pad button { min-height: 48px; font-size: 1.1rem; }
+    [data-drive="up"] { grid-area: up; }
+    [data-drive="down"] { grid-area: down; }
+    [data-drive="left"] { grid-area: left; }
+    [data-drive="right"] { grid-area: right; }
+    #stopButton { grid-area: stop; font-size: 0.78rem; }
+
+    .scene-panel {
+      position: relative;
+      min-height: 620px;
+      overflow: hidden;
+      background: #0d131b;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: 620px;
+      cursor: crosshair;
+      background: #f8fafc;
+      touch-action: none;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: rgba(7, 10, 14, 0.76);
+      backdrop-filter: blur(3px);
+      z-index: 5;
+    }
+
+    .overlay[hidden] { display: none; }
+
+    .overlay-card {
+      width: min(390px, calc(100% - 30px));
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      text-align: center;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
+    }
+
+    .overlay-card h2 { margin-top: 0; }
+    .overlay-card p { color: var(--muted); line-height: 1.5; }
+
+    footer {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-align: center;
+    }
+
+    footer a { color: #8fc5ff; }
+
+    @media (max-width: 880px) {
+      header { flex-direction: column; }
+      .status-stack { justify-content: flex-start; }
+      .layout { grid-template-columns: 1fr; }
+      aside { order: 2; }
+      .scene-panel { min-height: 52vh; }
+      canvas { min-height: 52vh; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { scroll-behavior: auto !important; }
+      button:active { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Hybrid A* Keyboard Driver</h1>
+        <p class="subtitle">Standalone HTML5 Canvas port of the interactive Python demo.</p>
+      </div>
+      <div class="status-stack" aria-live="polite">
+        <span id="statusPill" class="pill">Ready</span>
+        <span id="posePill" class="pill">Pose</span>
+        <span id="goalPill" class="pill">Goal not reached</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel">
+        <fieldset>
+          <legend>Scene</legend>
+          <label class="row">
+            <span>Environment</span>
+            <select id="environment">
+              <option value="parking">parking</option>
+              <option value="parking2">parking2</option>
+              <option value="parking2_2" selected>parking2_2</option>
+              <option value="parking3">parking3</option>
+              <option value="parking4">parking4</option>
+              <option value="walls">walls</option>
+            </select>
+          </label>
+          <label class="row"><span>Primitive length [m]</span><input id="primitiveLength" type="number" min="0.05" step="0.05" value="0.20"></label>
+          <label class="row"><span>Safety margin [m]</span><input id="safetyMargin" type="number" min="0" step="0.05" value="0.00"></label>
+          <label class="row"><span>Collision step [m]</span><input id="collisionStep" type="number" min="0.01" step="0.01" value="0.05"></label>
+          <label class="row"><span>Position tolerance [m]</span><input id="positionTolerance" type="number" min="0.01" step="0.05" value="0.20"></label>
+          <label class="row"><span>Yaw tolerance [deg]</span><input id="yawTolerance" type="number" min="0.1" step="0.1" value="1.5"></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Input timing</legend>
+          <label class="row"><span>Hold delay [ms]</span><input id="holdDelay" type="number" min="1" step="10" value="200"></label>
+          <label class="row"><span>Move interval [ms]</span><input id="moveInterval" type="number" min="1" step="10" value="100"></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Display</legend>
+          <div class="checks">
+            <label><input id="showGrid" type="checkbox" checked> Grid</label>
+            <label><input id="showSafety" type="checkbox" checked> Safety box</label>
+            <label><input id="showLabels" type="checkbox" checked> Labels</label>
+            <label><input id="highContrast" type="checkbox"> High contrast</label>
+          </div>
+        </fieldset>
+
+        <div class="button-row">
+          <button id="applyButton" class="primary" type="button">Apply &amp; reset</button>
+          <button id="resetButton" type="button">Reset pose</button>
+        </div>
+
+        <div>
+          <div class="drive-pad" aria-label="Touch driving controls">
+            <button type="button" data-drive="up" aria-label="Drive forward">▲</button>
+            <button type="button" data-drive="left" aria-label="Steer left">◀</button>
+            <button id="stopButton" class="danger" type="button">STOP</button>
+            <button type="button" data-drive="right" aria-label="Steer right">▶</button>
+            <button type="button" data-drive="down" aria-label="Drive backward">▼</button>
+          </div>
+        </div>
+
+        <div class="controls-help">
+          Hold <kbd>↑</kbd>/<kbd>W</kbd> or <kbd>↓</kbd>/<kbd>S</kbd> to drive. Combine with <kbd>←</kbd>/<kbd>A</kbd> or <kbd>→</kbd>/<kbd>D</kbd> for full steering. <kbd>R</kbd> resets. <kbd>Q</kbd>/<kbd>Esc</kbd> stops the browser game.
+        </div>
+      </aside>
+
+      <section class="panel scene-panel" aria-label="Driving scene">
+        <canvas id="canvas" tabindex="0">Your browser needs HTML5 Canvas support.</canvas>
+        <div id="stoppedOverlay" class="overlay" hidden>
+          <div class="overlay-card">
+            <h2>Game stopped</h2>
+            <p>A web page cannot reliably close its own browser tab, so Q/Escape stops input instead.</p>
+            <button id="resumeButton" class="primary" type="button">Resume</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      Algorithm and scene behavior ported from
+      <a href="https://github.com/davidenitti/misc/blob/main/hybrid_a_star/hybrid_astar_game.py" target="_blank" rel="noreferrer">hybrid_astar_game.py</a>
+      and its companion demo module. No libraries, server, or build step required.
+    </footer>
+  </div>
+
+  <script>
+  (() => {
+    "use strict";
+
+    const DEG = Math.PI / 180;
+    const TAU = Math.PI * 2;
+
+    const VEHICLE = Object.freeze({
+      wheelbase: 2.6,
+      length: 4.4,
+      width: 1.8,
+      rearOverhang: 1.0,
+      maxSteer: 40 * DEG
+    });
+
+    const ENVIRONMENTS = Object.freeze({
+      walls: {
+        name: "walls",
+        title: "Alternating-wall environment",
+        width: 30,
+        height: 20,
+        obstacles: [
+          [7, 9, 0, 11.5, "wall"],
+          [7, 9, 15, 20, "wall"],
+          [14, 16, 8.5, 20, "wall"],
+          [14, 16, 0, 4.5, "wall"],
+          [21, 23, 0, 11, "wall"],
+          [21, 23, 14.5, 20, "wall"]
+        ],
+        start: [3, 3, 0],
+        goal: [26.5, 16, 90 * DEG]
+      },
+      parking: {
+        name: "parking",
+        title: "Parallel-parking environment",
+        width: 30,
+        height: 12,
+        obstacles: [
+          [0, 30, 0, 2, "curb"],
+          [3, 8, 2.2, 4.4, "parked_car"],
+          [15.2, 20.2, 2.2, 4.4, "parked_car"]
+        ],
+        start: [14.5, 7.2, 0],
+        goal: [10.4, 3.2, 0]
+      },
+      parking2: {
+        name: "parking2",
+        title: "Parallel-parking environment v2",
+        width: 30,
+        height: 12,
+        obstacles: [
+          [0, 30, 0, 2, "curb"],
+          [3, 8, 2.2, 4.4, "parked_car"],
+          [15.2, 20.2, 2.2, 4.4, "parked_car"]
+        ],
+        start: [18.5, 6.2, 0],
+        goal: [10.4, 3.3, 0]
+      },
+      parking2_2: {
+        name: "parking2_2",
+        title: "Parallel-parking environment v2.2",
+        width: 30,
+        height: 12,
+        obstacles: [
+          [0, 30, 0, 2, "curb"],
+          [3.6, 9.1, 2.2, 4.4, "parked_car"],
+          [14.1, 20, 2.2, 4.4, "parked_car"]
+        ],
+        start: [18.5, 6.2, 0],
+        goal: [10.4, 3.3, 0]
+      },
+      parking3: {
+        name: "parking3",
+        title: "Parallel-parking environment v3",
+        width: 30,
+        height: 12,
+        obstacles: [
+          [0, 30, 0, 2, "curb"],
+          [3, 8, 2.2, 4.4, "parked_car"],
+          [15.2, 20.2, 2.2, 4.4, "parked_car"]
+        ],
+        start: [5, 6.2, 0],
+        goal: [10.4, 3.3, 0]
+      },
+      parking4: {
+        name: "parking4",
+        title: "Parallel-parking environment v4",
+        width: 30,
+        height: 14,
+        obstacles: [
+          [0, 30, 0, 2, "curb"],
+          [3, 8.9, 2.2, 9, "parked_car"],
+          [14.3, 20.2, 2.2, 9, "parked_car"]
+        ],
+        start: [18.5, 11, 0],
+        goal: [10.4, 3.3, 0]
+      }
+    });
+
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const statusPill = document.getElementById("statusPill");
+    const posePill = document.getElementById("posePill");
+    const goalPill = document.getElementById("goalPill");
+    const stoppedOverlay = document.getElementById("stoppedOverlay");
+
+    const fields = {
+      environment: document.getElementById("environment"),
+      primitiveLength: document.getElementById("primitiveLength"),
+      safetyMargin: document.getElementById("safetyMargin"),
+      collisionStep: document.getElementById("collisionStep"),
+      positionTolerance: document.getElementById("positionTolerance"),
+      yawTolerance: document.getElementById("yawTolerance"),
+      holdDelay: document.getElementById("holdDelay"),
+      moveInterval: document.getElementById("moveInterval"),
+      showGrid: document.getElementById("showGrid"),
+      showSafety: document.getElementById("showSafety"),
+      showLabels: document.getElementById("showLabels"),
+      highContrast: document.getElementById("highContrast")
+    };
+
+    const state = {
+      env: ENVIRONMENTS.parking2_2,
+      pose: [...ENVIRONMENTS.parking2_2.start],
+      steer: 0,
+      status: "Ready",
+      running: true,
+      pressed: new Set(),
+      drivePressedAt: new Map(),
+      lastMotionAt: new Map(),
+      config: {
+        primitiveLength: 0.2,
+        safetyMargin: 0.2,
+        collisionStep: 0.05,
+        positionTolerance: 0.2,
+        yawTolerance: 1.5 * DEG,
+        holdDelay: 100,
+        moveInterval: 100
+      },
+      dpr: 1,
+      view: { scale: 1, left: 0, top: 0, width: 1, height: 1, padding: 38 }
+    };
+
+    function finitePositive(value, fallback) {
+      const number = Number(value);
+      return Number.isFinite(number) && number > 0 ? number : fallback;
+    }
+
+    function finiteNonnegative(value, fallback) {
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : fallback;
+    }
+
+    function readConfig() {
+      state.config.primitiveLength = finitePositive(fields.primitiveLength.value, 0.2);
+      state.config.safetyMargin = finiteNonnegative(fields.safetyMargin.value, 0.2);
+      state.config.collisionStep = finitePositive(fields.collisionStep.value, 0.05);
+      state.config.positionTolerance = finitePositive(fields.positionTolerance.value, 0.2);
+      state.config.yawTolerance = finitePositive(fields.yawTolerance.value, 1.5) * DEG;
+      state.config.holdDelay = finitePositive(fields.holdDelay.value, 100);
+      state.config.moveInterval = finitePositive(fields.moveInterval.value, 100);
+    }
+
+    function wrap(angle) {
+      return ((angle + Math.PI) % TAU + TAU) % TAU - Math.PI;
+    }
+
+    function sampleDistances(length, step) {
+      const count = Math.floor(length / step);
+      const values = [];
+      for (let i = 1; i <= count; i += 1) values.push(i * step);
+      if (values.length === 0 || length - values[values.length - 1] > 1e-10) {
+        values.push(length);
+      } else {
+        values[values.length - 1] = length;
+      }
+      return values;
+    }
+
+    function arcPose(x0, y0, yaw0, signedDistance, steer) {
+      const curvature = Math.tan(steer) / VEHICLE.wheelbase;
+      if (Math.abs(curvature) < 1e-12) {
+        return [
+          x0 + signedDistance * Math.cos(yaw0),
+          y0 + signedDistance * Math.sin(yaw0),
+          yaw0
+        ];
+      }
+      const unwrappedYaw = yaw0 + signedDistance * curvature;
+      const x = x0 + (Math.sin(unwrappedYaw) - Math.sin(yaw0)) / curvature;
+      const y = y0 - (Math.cos(unwrappedYaw) - Math.cos(yaw0)) / curvature;
+      return [x, y, wrap(unwrappedYaw)];
+    }
+
+    // Same four-axis separating-axis test used by the Python implementation.
+    function collidesPose(x, y, yaw) {
+      const margin = state.config.safetyMargin;
+      const halfLength = VEHICLE.length / 2 + margin;
+      const halfWidth = VEHICLE.width / 2 + margin;
+      const centerOffset = VEHICLE.length / 2 - VEHICLE.rearOverhang;
+      const c = Math.cos(yaw);
+      const s = Math.sin(yaw);
+      const cx = x + centerOffset * c;
+      const cy = y + centerOffset * s;
+      const ac = Math.abs(c);
+      const as = Math.abs(s);
+      const radiusX = halfLength * ac + halfWidth * as;
+      const radiusY = halfLength * as + halfWidth * ac;
+
+      if (
+        cx - radiusX <= 0 || cx + radiusX >= state.env.width ||
+        cy - radiusY <= 0 || cy + radiusY >= state.env.height
+      ) return true;
+
+      for (const obstacle of state.env.obstacles) {
+        const [xmin, xmax, ymin, ymax] = obstacle;
+        const ox = (xmin + xmax) / 2;
+        const oy = (ymin + ymax) / 2;
+        const ex = (xmax - xmin) / 2;
+        const ey = (ymax - ymin) / 2;
+        const dx = ox - cx;
+        const dy = oy - cy;
+
+        if (Math.abs(dx) > ex + radiusX || Math.abs(dy) > ey + radiusY) continue;
+        if (Math.abs(dx * c + dy * s) > halfLength + ex * ac + ey * as) continue;
+        if (Math.abs(-dx * s + dy * c) > halfWidth + ex * as + ey * ac) continue;
+        return true;
+      }
+      return false;
+    }
+
+    function checkedPrimitive(direction, steer) {
+      const start = state.pose;
+      let endpoint = start;
+      for (const distance of sampleDistances(state.config.primitiveLength, state.config.collisionStep)) {
+        endpoint = arcPose(start[0], start[1], start[2], direction * distance, steer);
+        if (collidesPose(endpoint[0], endpoint[1], endpoint[2])) return null;
+      }
+      return endpoint;
+    }
+
+    function goalReached() {
+      const [x, y, yaw] = state.pose;
+      const [gx, gy, gyaw] = state.env.goal;
+      return Math.hypot(x - gx, y - gy) <= state.config.positionTolerance &&
+        Math.abs(wrap(yaw - gyaw)) <= state.config.yawTolerance;
+    }
+
+    function activeSteer() {
+      const left = state.pressed.has("left");
+      const right = state.pressed.has("right");
+      if (left && !right) return VEHICLE.maxSteer;
+      if (right && !left) return -VEHICLE.maxSteer;
+      return 0;
+    }
+
+    function move(direction) {
+      if (!state.running) return false;
+      const steer = activeSteer();
+      const endpoint = checkedPrimitive(direction, steer);
+      if (!endpoint) {
+        state.status = "Blocked: swept safety envelope would collide";
+        updateHud();
+        render();
+        return false;
+      }
+      state.pose = endpoint;
+      state.steer = steer;
+      state.status = "Moved";
+      updateHud();
+      render();
+      return true;
+    }
+
+    function updateSteeringStatus() {
+      state.steer = activeSteer();
+      if (state.steer > 0) state.status = "Steering full left";
+      else if (state.steer < 0) state.status = "Steering full right";
+      else state.status = "Steering straight";
+      updateHud();
+      render();
+    }
+
+    function clearPressed(status = "Stopped") {
+      state.pressed.clear();
+      state.drivePressedAt.clear();
+      state.lastMotionAt.clear();
+      state.steer = 0;
+      state.status = status;
+      document.querySelectorAll("[data-drive].active").forEach(button => button.classList.remove("active"));
+      updateHud();
+      render();
+    }
+
+    function resetPose(status = "Reset to start") {
+      clearPressed(status);
+      state.pose = [...state.env.start];
+      state.steer = 0;
+      updateHud();
+      render();
+      canvas.focus({ preventScroll: true });
+    }
+
+    function applyAndReset() {
+      readConfig();
+      state.env = ENVIRONMENTS[fields.environment.value] || ENVIRONMENTS.parking;
+      const rect = canvas.getBoundingClientRect();
+      computeView(rect.width, rect.height);
+      state.running = true;
+      stoppedOverlay.hidden = true;
+      resetPose("Applied settings and reset");
+    }
+
+    function stopGame() {
+      state.running = false;
+      clearPressed("Game stopped");
+      stoppedOverlay.hidden = false;
+    }
+
+    function resumeGame() {
+      state.running = true;
+      stoppedOverlay.hidden = true;
+      state.status = "Ready";
+      updateHud();
+      render();
+      canvas.focus({ preventScroll: true });
+    }
+
+    function pressControl(key, now = performance.now()) {
+      if (!state.running) return;
+      const alreadyPressed = state.pressed.has(key);
+      state.pressed.add(key);
+      const button = document.querySelector(`[data-drive="${key}"]`);
+      if (button) button.classList.add("active");
+
+      if (key === "left" || key === "right") {
+        updateSteeringStatus();
+        return;
+      }
+
+      state.status = "Drive key held";
+      if (!alreadyPressed) {
+        state.drivePressedAt.set(key, now);
+        state.lastMotionAt.set(key, now);
+        const opposite = key === "up" ? "down" : "up";
+        if (!state.pressed.has(opposite)) move(key === "up" ? 1 : -1);
+      }
+      updateHud();
+    }
+
+    function releaseControl(key) {
+      if (!["up", "down", "left", "right"].includes(key)) return;
+      state.pressed.delete(key);
+      const button = document.querySelector(`[data-drive="${key}"]`);
+      if (button) button.classList.remove("active");
+
+      if (key === "up" || key === "down") {
+        state.drivePressedAt.delete(key);
+        state.lastMotionAt.delete(key);
+      }
+      if (key === "left" || key === "right") {
+        updateSteeringStatus();
+      } else if (!state.pressed.has("up") && !state.pressed.has("down")) {
+        state.status = "Stopped";
+        updateHud();
+        render();
+      }
+    }
+
+    function normalizeKey(event) {
+      const key = event.key.toLowerCase();
+      return ({
+        w: "up", arrowup: "up",
+        s: "down", arrowdown: "down",
+        a: "left", arrowleft: "left",
+        d: "right", arrowright: "right"
+      })[key] || key;
+    }
+
+    function updateHud() {
+      const [x, y, yaw] = state.pose;
+      const reached = goalReached();
+      statusPill.textContent = state.status;
+      statusPill.className = "pill" + (state.status.startsWith("Blocked") ? " bad" : "");
+      posePill.textContent = `(${x.toFixed(2)}, ${y.toFixed(2)}, ${(yaw / DEG).toFixed(1)}°)`;
+      goalPill.textContent = reached ? "Goal reached!" : "Goal not reached";
+      goalPill.className = "pill " + (reached ? "good" : "");
+    }
+
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+      state.dpr = dpr;
+      const width = Math.max(1, Math.round(rect.width * dpr));
+      const height = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      computeView(rect.width, rect.height);
+      render();
+    }
+
+    function computeView(canvasWidth, canvasHeight) {
+      const padding = state.view.padding;
+      const usableWidth = Math.max(1, canvasWidth - padding * 2);
+      const usableHeight = Math.max(1, canvasHeight - padding * 2);
+      const scale = Math.min(usableWidth / state.env.width, usableHeight / state.env.height);
+      const worldWidth = state.env.width * scale;
+      const worldHeight = state.env.height * scale;
+      state.view = {
+        scale,
+        left: (canvasWidth - worldWidth) / 2,
+        top: (canvasHeight - worldHeight) / 2,
+        width: worldWidth,
+        height: worldHeight,
+        padding
+      };
+    }
+
+    function screenPoint(x, y) {
+      return [
+        state.view.left + x * state.view.scale,
+        state.view.top + (state.env.height - y) * state.view.scale
+      ];
+    }
+
+    function polygonPath(points) {
+      if (!points.length) return;
+      const [sx, sy] = screenPoint(points[0][0], points[0][1]);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      for (let i = 1; i < points.length; i += 1) {
+        const [x, y] = screenPoint(points[i][0], points[i][1]);
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+    }
+
+    function vehiclePolygon(x, y, yaw, margin = 0) {
+      const rear = -VEHICLE.rearOverhang - margin;
+      const front = VEHICLE.length - VEHICLE.rearOverhang + margin;
+      const halfWidth = VEHICLE.width / 2 + margin;
+      const local = [
+        [front, halfWidth], [front, -halfWidth],
+        [rear, -halfWidth], [rear, halfWidth]
+      ];
+      const c = Math.cos(yaw);
+      const s = Math.sin(yaw);
+      return local.map(([lx, ly]) => [x + lx * c - ly * s, y + lx * s + ly * c]);
+    }
+
+    function tirePolygons(x, y, yaw, steer) {
+      const tireLength = 0.68;
+      const tireWidth = 0.24;
+      const halfTrack = VEHICLE.width / 2 - tireWidth / 2;
+      const axlePositions = [[0, yaw], [VEHICLE.wheelbase, yaw + steer]];
+      const tires = [];
+      const bodyC = Math.cos(yaw);
+      const bodyS = Math.sin(yaw);
+      for (const [axleX, tireYaw] of axlePositions) {
+        for (const side of [-halfTrack, halfTrack]) {
+          const centerX = x + axleX * bodyC - side * bodyS;
+          const centerY = y + axleX * bodyS + side * bodyC;
+          const local = [
+            [tireLength / 2, tireWidth / 2], [tireLength / 2, -tireWidth / 2],
+            [-tireLength / 2, -tireWidth / 2], [-tireLength / 2, tireWidth / 2]
+          ];
+          const c = Math.cos(tireYaw);
+          const s = Math.sin(tireYaw);
+          tires.push(local.map(([lx, ly]) => [centerX + lx * c - ly * s, centerY + lx * s + ly * c]));
+        }
+      }
+      return tires;
+    }
+
+    function drawGrid(colors) {
+      if (!fields.showGrid.checked) return;
+      const major = 5;
+      ctx.save();
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= state.env.width + 1e-9; x += 1) {
+        const [sx] = screenPoint(x, 0);
+        ctx.strokeStyle = x % major === 0 ? colors.gridMajor : colors.gridMinor;
+        ctx.beginPath();
+        ctx.moveTo(sx, state.view.top);
+        ctx.lineTo(sx, state.view.top + state.view.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= state.env.height + 1e-9; y += 1) {
+        const [, sy] = screenPoint(0, y);
+        ctx.strokeStyle = y % major === 0 ? colors.gridMajor : colors.gridMinor;
+        ctx.beginPath();
+        ctx.moveTo(state.view.left, sy);
+        ctx.lineTo(state.view.left + state.view.width, sy);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawWorldLabels(colors) {
+      if (!fields.showLabels.checked) return;
+      ctx.save();
+      ctx.fillStyle = colors.text;
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (let x = 0; x <= state.env.width; x += 5) {
+        const [sx, sy] = screenPoint(x, 0);
+        ctx.fillText(String(x), sx, sy + 7);
+      }
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (let y = 0; y <= state.env.height; y += 5) {
+        const [sx, sy] = screenPoint(0, y);
+        ctx.fillText(String(y), sx - 8, sy);
+      }
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText("x [m]", state.view.left + state.view.width - 30, state.view.top + state.view.height + 19);
+      ctx.save();
+      ctx.translate(state.view.left - 28, state.view.top + 18);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText("y [m]", 0, 0);
+      ctx.restore();
+      ctx.restore();
+    }
+
+    function drawObstacle(obstacle, colors) {
+      const [xmin, xmax, ymin, ymax, kind] = obstacle;
+      const [x1, y1] = screenPoint(xmin, ymax);
+      const [x2, y2] = screenPoint(xmax, ymin);
+      const width = x2 - x1;
+      const height = y2 - y1;
+
+      ctx.save();
+      ctx.fillStyle = kind === "parked_car" ? colors.parked : colors.wall;
+      ctx.strokeStyle = colors.obstacleEdge;
+      ctx.lineWidth = 1.4;
+      ctx.fillRect(x1, y1, width, height);
+      ctx.strokeRect(x1, y1, width, height);
+
+      ctx.beginPath();
+      ctx.rect(x1, y1, width, height);
+      ctx.clip();
+      ctx.strokeStyle = colors.hatch;
+      ctx.lineWidth = 1;
+      const spacing = kind === "parked_car" ? 10 : 12;
+      for (let d = -height; d < width + height; d += spacing) {
+        ctx.beginPath();
+        ctx.moveTo(x1 + d, y1 + height);
+        ctx.lineTo(x1 + d + height, y1);
+        ctx.stroke();
+        if (kind === "parked_car") {
+          ctx.beginPath();
+          ctx.moveTo(x1 + d, y1);
+          ctx.lineTo(x1 + d + height, y1 + height);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+
+      if (kind === "parked_car" && fields.showLabels.checked && width > 70 && height > 28) {
+        ctx.save();
+        ctx.fillStyle = colors.obstacleText;
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("parked car", x1 + width / 2, y1 + height / 2);
+        ctx.restore();
+      }
+    }
+
+    function drawGoal(colors, reached) {
+      const [gx, gy, gyaw] = state.env.goal;
+      const [cx, cy] = screenPoint(gx, gy);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, state.config.positionTolerance * state.view.scale, 0, TAU);
+      ctx.fillStyle = colors.goalRegion;
+      ctx.strokeStyle = colors.goal;
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.fill();
+      ctx.stroke();
+
+      polygonPath(vehiclePolygon(gx, gy, gyaw));
+      ctx.setLineDash([8, 5]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = colors.goal;
+      if (reached) {
+        ctx.fillStyle = colors.goalReached;
+        ctx.fill();
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawArrow(x1, y1, x2, y2, color) {
+      const [sx1, sy1] = screenPoint(x1, y1);
+      const [sx2, sy2] = screenPoint(x2, y2);
+      const angle = Math.atan2(sy2 - sy1, sx2 - sx1);
+      const head = 10;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(sx1, sy1);
+      ctx.lineTo(sx2, sy2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx2, sy2);
+      ctx.lineTo(sx2 - head * Math.cos(angle - Math.PI / 6), sy2 - head * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(sx2 - head * Math.cos(angle + Math.PI / 6), sy2 - head * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawVehicle(colors) {
+      const [x, y, yaw] = state.pose;
+      if (fields.showSafety.checked) {
+        polygonPath(vehiclePolygon(x, y, yaw, state.config.safetyMargin));
+        ctx.save();
+        ctx.strokeStyle = colors.safety;
+        ctx.lineWidth = 2.1;
+        ctx.setLineDash([2, 5]);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      polygonPath(vehiclePolygon(x, y, yaw));
+      ctx.save();
+      ctx.strokeStyle = colors.vehicleEdge;
+      ctx.lineWidth = 2.3;
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.fillStyle = colors.tire;
+      ctx.strokeStyle = colors.tire;
+      for (const tire of tirePolygons(x, y, yaw, state.steer)) {
+        polygonPath(tire);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      const front = VEHICLE.length - VEHICLE.rearOverhang;
+      const tipDistance = front - 0.25;
+      drawArrow(x, y, x + tipDistance * Math.cos(yaw), y + tipDistance * Math.sin(yaw), colors.arrow);
+
+      const [rx, ry] = screenPoint(x, y);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(rx, ry, 4.5, 0, TAU);
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#111827";
+      ctx.lineWidth = 1.5;
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawTitle(colors) {
+      ctx.save();
+      ctx.fillStyle = colors.text;
+      ctx.font = "600 14px system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(state.env.title, state.view.left, Math.max(8, state.view.top - 25));
+      ctx.restore();
+    }
+
+    function palette() {
+      if (fields.highContrast.checked) {
+        return {
+          outside: "#080808", world: "#ffffff", border: "#000000",
+          gridMinor: "rgba(0,0,0,0.12)", gridMajor: "rgba(0,0,0,0.30)", text: "#000000",
+          wall: "#b8b8b8", parked: "#7aa7d8", obstacleEdge: "#000000", hatch: "rgba(0,0,0,0.38)", obstacleText: "#000000",
+          goal: "#008c31", goalRegion: "rgba(0,170,60,0.16)", goalReached: "rgba(0,200,70,0.45)",
+          safety: "#d00000", vehicleFill: "rgba(255,170,0,0.52)", vehicleEdge: "#000000", tire: "#000000", arrow: "#005ac8"
+        };
+      }
+      return {
+        outside: "#0d131b", world: "#f8fafc", border: "#4b5563",
+        gridMinor: "rgba(71,85,105,0.12)", gridMajor: "rgba(71,85,105,0.26)", text: "#334155",
+        wall: "#d1d5db", parked: "#a9c4df", obstacleEdge: "#64748b", hatch: "rgba(51,65,85,0.30)", obstacleText: "#26384b",
+        goal: "#1f9d55", goalRegion: "rgba(31,157,85,0.13)", goalReached: "rgba(31,190,90,0.42)",
+        safety: "#e05252", vehicleFill: "rgba(247,174,73,0.42)", vehicleEdge: "#243447", tire: "#111827", arrow: "#267acb"
+      };
+    }
+
+    function render() {
+      const colors = palette();
+      const rect = canvas.getBoundingClientRect();
+      ctx.save();
+      ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+      ctx.fillStyle = colors.outside;
+      ctx.fillRect(0, 0, rect.width, rect.height);
+
+      ctx.fillStyle = colors.world;
+      ctx.fillRect(state.view.left, state.view.top, state.view.width, state.view.height);
+      ctx.strokeStyle = colors.border;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(state.view.left, state.view.top, state.view.width, state.view.height);
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(state.view.left, state.view.top, state.view.width, state.view.height);
+      ctx.clip();
+      drawGrid(colors);
+      for (const obstacle of state.env.obstacles) drawObstacle(obstacle, colors);
+      drawGoal(colors, goalReached());
+      drawVehicle(colors);
+      ctx.restore();
+
+      drawWorldLabels(colors);
+      drawTitle(colors);
+      ctx.restore();
+    }
+
+    function motionFrame(now) {
+      if (state.running) {
+        const forward = state.pressed.has("up");
+        const backward = state.pressed.has("down");
+        if (forward !== backward) {
+          const key = forward ? "up" : "down";
+          const pressedAt = state.drivePressedAt.get(key);
+          const lastAt = state.lastMotionAt.get(key);
+          if (
+            pressedAt !== undefined && lastAt !== undefined &&
+            now - pressedAt >= state.config.holdDelay &&
+            now - lastAt + 1e-9 >= state.config.moveInterval
+          ) {
+            move(forward ? 1 : -1);
+            state.lastMotionAt.set(key, now);
+          }
+        }
+      }
+      requestAnimationFrame(motionFrame);
+    }
+
+    window.addEventListener("keydown", event => {
+      const key = normalizeKey(event);
+      if (["up", "down", "left", "right", "r", "q", "escape"].includes(key)) event.preventDefault();
+      if (key === "q" || key === "escape") {
+        stopGame();
+      } else if (key === "r") {
+        resetPose();
+      } else if (["up", "down", "left", "right"].includes(key)) {
+        pressControl(key);
+      }
+    }, { passive: false });
+
+    window.addEventListener("keyup", event => {
+      const key = normalizeKey(event);
+      if (["up", "down", "left", "right"].includes(key)) {
+        event.preventDefault();
+        releaseControl(key);
+      }
+    }, { passive: false });
+
+    window.addEventListener("blur", () => clearPressed("Stopped: window lost focus"));
+    window.addEventListener("resize", resizeCanvas);
+    canvas.addEventListener("pointerdown", () => canvas.focus({ preventScroll: true }));
+
+    document.getElementById("applyButton").addEventListener("click", applyAndReset);
+    document.getElementById("resetButton").addEventListener("click", () => resetPose());
+    document.getElementById("stopButton").addEventListener("click", stopGame);
+    document.getElementById("resumeButton").addEventListener("click", resumeGame);
+
+    for (const field of [fields.showGrid, fields.showSafety, fields.showLabels, fields.highContrast]) {
+      field.addEventListener("change", render);
+    }
+
+    document.querySelectorAll("[data-drive]").forEach(button => {
+      const key = button.dataset.drive;
+      const release = event => {
+        event.preventDefault();
+        if (button.hasPointerCapture?.(event.pointerId)) button.releasePointerCapture(event.pointerId);
+        releaseControl(key);
+      };
+      button.addEventListener("pointerdown", event => {
+        event.preventDefault();
+        button.setPointerCapture?.(event.pointerId);
+        pressControl(key);
+      });
+      button.addEventListener("pointerup", release);
+      button.addEventListener("pointercancel", release);
+      button.addEventListener("contextmenu", event => event.preventDefault());
+    });
+
+    const resizeObserver = new ResizeObserver(resizeCanvas);
+    resizeObserver.observe(canvas);
+    readConfig();
+    updateHud();
+    resizeCanvas();
+    requestAnimationFrame(motionFrame);
+    canvas.focus({ preventScroll: true });
+  })();
+  </script>
+</body>
+</html>
