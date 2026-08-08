@@ -96,11 +96,14 @@ with `--animation_format gif`). `--no_animation_plot` independently suppresses
 the playback window. The `--live_plot_every` option is separate and controls
 visualization while the search is running.
 
-Run the interactive Python game with `python hybrid_astar_game.py` and try to
-reach the goal manually with the arrow keys. Alternatively, open
-`hybrid_astar_game_standalone.html` directly in a browser. Configure parameter
-sweeps in `run_hybrid_astar_batch.py`. Use `search_json_arguments.py` to find
-result JSON files that contain particular stored argument values.
+For hyperparameter tuning, use `run_hybrid_astar_batch.py`.
+Use `search_json_arguments.py` to find result JSON files that contain particular stored argument values.
+
+## Play Online
+Try to reach the goal manually with the arrow keys here:
+[Play the game](https://davidenitti.github.io/path_planning/hybrid_astar_game_standalone.html)
+
+Alternatively, run the interactive Python game with `python hybrid_astar_game.py`.
 
 ## A*
 
