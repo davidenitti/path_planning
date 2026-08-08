@@ -4,10 +4,11 @@ This project explores path-planning algorithms for a car-like robot in a 2D
 environment. With the help of GPT 5.6, I implemented Hybrid A* with single-queue and optional two-queue search, collision-checked bicycle-model motion primitives, corridor-guided
 search, plotting, animation, and interactive driving demos.
 
+![Hybrid A* solving the parking2_hard environment](parking2_hard_animation.gif)
 
 If you find an issue or have a question, please open an issue.
 
-We first describe the project setup and usage, then explain the algorithms and implementation details.
+I first describe the project setup and usage, then explain the algorithms and implementation details.
 
 ## Quick start
 
@@ -55,7 +56,7 @@ To find a solution for `parking2_hard`, use a zero safety margin and a smaller
 python hybrid_astar_main.py --env parking2_hard --safety_margin 0.0 --xy_resolution 0.1
 ```
 
-For a smoother path, use `--steering_change_penalty 0.5`:
+For a smoother path, use `--steering_change_penalty 0.5`, this is the command used for the animation above:
 
 ```bash
 python hybrid_astar_main.py --env parking2_hard --safety_margin 0.0 --xy_resolution 0.1 --steering_change_penalty 0.5
