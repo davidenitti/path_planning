@@ -2,8 +2,8 @@
 """Drive a Hybrid A* demo vehicle interactively with the keyboard.
 
 Examples:
-    python -m hybrid_a_star.hybrid_astar_game
-    python -m hybrid_a_star.hybrid_astar_game --env walls --primitive_length 0.4
+    python hybrid_astar_game.py
+    python hybrid_astar_game.py --env walls --primitive_length 0.4
 
 Controls:
     Up/W: move forward           Down/S: move backward
@@ -22,65 +22,27 @@ safety-inflated world boundary.
 
 import argparse
 import math
-import os
-import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
-import matplotlib
-
-try:
-    import PySide6
-    from PySide6 import QtCore
-
-    # This environment has the PySide6 Essentials/Addons wheels but not the
-    # small PySide6 metapackage that normally defines ``__version__``.
-    # Matplotlib's Qt compatibility loader needs that metadata attribute.
-    if not hasattr(PySide6, "__version__"):
-        PySide6.__version__ = QtCore.__version__
-    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
-        os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
-    matplotlib.use("QtAgg")
-except ImportError:
-    # Leave a genuinely headless or Qt-free environment alone; pyplot will
-    # report its usual backend limitation if somebody runs the game there.
-    pass
 
 import matplotlib.pyplot as plt
-from matplotlib.backend_bases import KeyEvent
+from matplotlib.backend_bases import KeyEvent, TimerBase
 from matplotlib.patches import FancyArrowPatch, Polygon
 
-try:
-    from hybrid_astar_demo import (
-        Environment,
-        HybridAStar,
-        Node,
-        Vehicle,
-        draw_environment,
-        draw_goal_pose,
-        draw_goal_region,
-        make_environment,
-        vehicle_heading_arrow,
-        vehicle_polygon,
-        vehicle_tire_polygons,
-        wrap,
-    )
-except ModuleNotFoundError:  # Supports ``python hybrid_a_star_game.py`` too.
-    from hybrid_astar_demo import (  # type: ignore[no-redef]
-        Environment,
-        HybridAStar,
-        Node,
-        Vehicle,
-        draw_environment,
-        draw_goal_pose,
-        draw_goal_region,
-        make_environment,
-        vehicle_heading_arrow,
-        vehicle_polygon,
-        vehicle_tire_polygons,
-        wrap,
-    )
+from hybrid_astar_main import draw_environment, draw_goal_pose, draw_goal_region
+from hybrid_astar_planner import (
+    Environment,
+    HybridAStar,
+    Node,
+    Vehicle,
+    make_environment,
+    vehicle_heading_arrow,
+    vehicle_polygon,
+    vehicle_tire_polygons,
+    wrap,
+)
 
 
 @dataclass
@@ -107,7 +69,7 @@ class CarGame:
         return cls(planner=planner, env=env, pose=env.start)
 
     def move(self, direction: int, steer_index: int) -> bool:
-        """Apply one fine primitive when its complete swept path is collision-free.
+        """Apply one fine primitive when all swept-path samples are collision-free.
 
         Args:
             direction: ``1`` for forward motion or ``-1`` for reverse motion.
@@ -128,7 +90,7 @@ class CarGame:
             node,
             direction,
             steer_index,
-            self.planner._fine_collision_distances,
+            self.planner._collision_distances,
         )
         if endpoint is None:
             self.status = "Blocked: the swept safety envelope would collide"
@@ -145,7 +107,7 @@ class CarGame:
         self.status = "Reset to start"
 
     def set_steer(self, steer_index: int) -> None:
-        """Set the displayed and next-command steering angle.
+        """Set the displayed steering angle.
 
         Args:
             steer_index: Index into the planner's discrete steering values.
@@ -187,6 +149,7 @@ class GameView:
         self.move_interval_seconds = move_interval_ms / 1000.0
         self.drive_pressed_at: dict[str, float] = {}
         self.last_motion_at: dict[str, float] = {}
+        self.release_timers: dict[str, TimerBase] = {}
         self.figure, self.ax = plt.subplots(figsize=(12, 7))
         self.figure.canvas.manager.set_window_title("Hybrid A* keyboard driver")
         draw_environment(self.ax, game.env)
@@ -316,22 +279,29 @@ class GameView:
             self.pressed_keys.clear()
             self.drive_pressed_at.clear()
             self.last_motion_at.clear()
+            for release_timer in self.release_timers.values():
+                release_timer.stop()
+            self.release_timers.clear()
             self.game.reset()
         elif key in {"up", "down", "left", "right"}:
+            release_timer = self.release_timers.pop(key, None)
+            if release_timer is not None:
+                release_timer.stop()
             already_pressed = key in self.pressed_keys
+            if already_pressed:
+                return
             self.pressed_keys.add(key)
             if key in {"left", "right"}:
                 self.update_steering()
             else:
                 self.game.status = "Drive key held"
-                if not already_pressed:
-                    now = time.monotonic()
-                    self.drive_pressed_at[key] = now
-                    self.last_motion_at[key] = now
-                    opposite = "down" if key == "up" else "up"
-                    if opposite not in self.pressed_keys:
-                        direction = 1 if key == "up" else -1
-                        self.game.move(direction, self.active_steer_index())
+                now = time.monotonic()
+                self.drive_pressed_at[key] = now
+                self.last_motion_at[key] = now
+                opposite = "down" if key == "up" else "up"
+                if opposite not in self.pressed_keys:
+                    direction = 1 if key == "up" else -1
+                    self.game.move(direction, self.active_steer_index())
         else:
             return
         self.update()
@@ -345,6 +315,25 @@ class GameView:
         key = self.normalized_key(event)
         if key not in {"up", "down", "left", "right"}:
             return
+        release_timer = self.release_timers.pop(key, None)
+        if release_timer is not None:
+            release_timer.stop()
+        release_timer = self.figure.canvas.new_timer(interval=20)
+        release_timer.single_shot = True
+        release_timer.add_callback(self.finish_key_release, key)
+        self.release_timers[key] = release_timer
+        release_timer.start()
+
+    def finish_key_release(self, key: str) -> None:
+        """Apply a delayed key release after filtering backend auto-repeat.
+
+        Args:
+            key: Canonical drive or steering key to release.
+
+        Returns:
+            None.
+        """
+        self.release_timers.pop(key, None)
         self.pressed_keys.discard(key)
         if key in {"up", "down"}:
             self.drive_pressed_at.pop(key, None)
@@ -394,10 +383,10 @@ class GameView:
             self.goal_pose.set_alpha(self.goal_pose_default_alpha)
         goal_text = " Goal reached!" if goal_reached else ""
         self.ax.set_title(
-            f"{game.env.title} — {game.status}{goal_text}\n"
+            f"{game.env.title} - {game.status}{goal_text}\n"
             "Up/W forward, Down/S reverse; hold Left/A or Right/D while moving to steer; "
             "R reset, Q quit\n"
-            f"Pose: ({x:.2f}, {y:.2f}, {math.degrees(yaw):.1f}°) — click the plot if keys are ignored"
+            f"Pose: ({x:.2f}, {y:.2f}, {math.degrees(yaw):.1f}°) - click the plot if keys are ignored"
         )
         self.figure.canvas.draw_idle()
 
@@ -412,6 +401,7 @@ def positive_float(value: str) -> float:
         Parsed positive value.
 
     Raises:
+        ValueError: If conversion to float fails.
         argparse.ArgumentTypeError: If the value is not finite and positive.
     """
     number = float(value)
@@ -430,6 +420,7 @@ def nonnegative_float(value: str) -> float:
         Parsed non-negative value.
 
     Raises:
+        ValueError: If conversion to float fails.
         argparse.ArgumentTypeError: If the value is not finite and non-negative.
     """
     number = float(value)
@@ -448,6 +439,7 @@ def positive_int(value: str) -> int:
         Parsed positive integer.
 
     Raises:
+        ValueError: If conversion to int fails.
         argparse.ArgumentTypeError: If the value is not a positive integer.
     """
     number = int(value)
@@ -465,7 +457,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--env",
-        choices=("walls", "parking", "parking2", "parking2_2", "parking3", "parking4"),
+        choices=("walls", "maze", "parking", "parking2", "parking2_hard", "parking3", "parking4"),
         default="parking",
         help="Demo environment to drive in.",
     )
@@ -491,7 +483,10 @@ def make_parser() -> argparse.ArgumentParser:
         help="Swept collision sample spacing [m].",
     )
     parser.add_argument(
-        "--integration_step", type=positive_float, default=0.1, help="Demo path sample spacing [m]."
+        "--integration_step",
+        type=positive_float,
+        default=0.1,
+        help="Planner reconstruction sample spacing [m].",
     )
     parser.add_argument(
         "--xy_resolution", type=positive_float, default=0.15, help="Demo planner x/y resolution [m]."
@@ -502,7 +497,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hold_delay_ms",
         type=positive_int,
-        default=300,
+        default=150,
         help="Delay before a held drive key starts repeating [ms].",
     )
     parser.add_argument(

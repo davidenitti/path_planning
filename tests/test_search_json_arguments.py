@@ -35,14 +35,14 @@ def test_matching_paths_matches_all_filters_with_exact_types(tmp_path: Path) -> 
                     "heuristic": "default",
                     "safety_margin": 0.0,
                     "max_expansions": 1_000_000,
-                    "no_animation": False,
+                    "save_video": True,
                 }
             }
         ),
         encoding="utf-8",
     )
     (tmp_path / "wrong_type.json").write_text(
-        json.dumps({"arguments": {"max_expansions": True, "no_animation": False}}),
+        json.dumps({"arguments": {"max_expansions": True, "save_video": True}}),
         encoding="utf-8",
     )
     (tmp_path / "not_a_result.json").write_text(json.dumps({"other": "value"}), encoding="utf-8")
@@ -54,7 +54,7 @@ def test_matching_paths_matches_all_filters_with_exact_types(tmp_path: Path) -> 
             ("heuristic", "default"),
             ("safety_margin", 0.0),
             ("max_expansions", 1_000_000),
-            ("no_animation", False),
+            ("save_video", True),
         ],
     )
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hybrid A* Keyboard Driver — Standalone</title>
+  <title>Hybrid A* Keyboard Driver - Standalone</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -300,12 +300,13 @@
           <label class="row">
             <span>Environment</span>
             <select id="environment">
-              <option value="parking">parking</option>
+              <option value="parking" selected>parking</option>
               <option value="parking2">parking2</option>
-              <option value="parking2_2" selected>parking2_2</option>
+              <option value="parking2_hard">parking2_hard</option>
               <option value="parking3">parking3</option>
               <option value="parking4">parking4</option>
               <option value="walls">walls</option>
+              <option value="maze">maze</option>
             </select>
           </label>
           <label class="row"><span>Primitive length [m]</span><input id="primitiveLength" type="number" min="0.05" step="0.05" value="0.20"></label>
@@ -385,6 +386,56 @@
       maxSteer: 40 * DEG
     });
 
+    const MAZE_SVG_SCALE = 0.25;
+    const MAZE_FRAME_LEFT = 20.410;
+    const MAZE_FRAME_RIGHT = 457.459;
+    const MAZE_FRAME_TOP = 35.983;
+    const MAZE_FRAME_BOTTOM = 263.197;
+    const MAZE_SOURCE_BOXES = Object.freeze([
+      [20.410, 30.410, 35.983, 263.197],
+      [20.410, 414.754, 253.197, 263.197],
+      [25.410, 69.672, 169.590, 179.590],
+      [190.082, 200.082, 212.295, 258.197],
+      [62.295, 457.459, 35.983, 45.983],
+      [447.459, 457.459, 35.983, 263.197],
+      [276.147, 286.147, 40.983, 86.885],
+      [64.672, 112.295, 81.885, 91.885],
+      [64.672, 74.672, 81.885, 135.328],
+      [64.672, 200.082, 125.328, 135.328],
+      [190.082, 200.082, 125.328, 176.311],
+      [148.279, 200.082, 166.311, 176.311],
+      [148.279, 158.279, 166.311, 217.295],
+      [69.672, 158.279, 207.295, 217.295],
+      [104.017, 114.017, 130.328, 174.590],
+      [149.099, 159.099, 40.983, 130.328],
+      [404.836, 414.836, 125.328, 174.590],
+      [404.836, 452.459, 125.328, 135.328],
+      [366.394, 452.459, 212.213, 222.213],
+      [195.082, 244.344, 81.885, 91.885],
+      [234.344, 244.344, 81.885, 135.328],
+      [234.344, 286.147, 125.328, 135.328],
+      [276.147, 286.147, 125.328, 179.590],
+      [276.147, 371.394, 169.590, 179.590],
+      [361.394, 371.394, 81.885, 179.590],
+      [319.590, 371.394, 81.885, 91.885],
+      [318.772, 329.590, 86.791, 130.422],
+      [366.394, 414.754, 81.885, 91.885],
+      [234.344, 244.344, 174.590, 217.295],
+      [234.344, 329.590, 207.295, 217.295],
+      [319.590, 329.590, 174.590, 217.295],
+      [276.967, 286.967, 212.295, 258.197]
+    ]);
+
+    function buildMazeObstacles() {
+      return MAZE_SOURCE_BOXES.map(([xmin, xmax, ymin, ymax]) => [
+        (xmin - MAZE_FRAME_LEFT) * MAZE_SVG_SCALE,
+        (xmax - MAZE_FRAME_LEFT) * MAZE_SVG_SCALE,
+        (MAZE_FRAME_BOTTOM - ymax) * MAZE_SVG_SCALE,
+        (MAZE_FRAME_BOTTOM - ymin) * MAZE_SVG_SCALE,
+        "wall"
+      ]);
+    }
+
     const ENVIRONMENTS = Object.freeze({
       walls: {
         name: "walls",
@@ -401,6 +452,15 @@
         ],
         start: [3, 3, 0],
         goal: [26.5, 16, 90 * DEG]
+      },
+      maze: {
+        name: "maze",
+        title: "Classic branching maze environment",
+        width: (MAZE_FRAME_RIGHT - MAZE_FRAME_LEFT) * MAZE_SVG_SCALE,
+        height: (MAZE_FRAME_BOTTOM - MAZE_FRAME_TOP) * MAZE_SVG_SCALE,
+        obstacles: buildMazeObstacles(),
+        start: [(46.540 - MAZE_FRAME_LEFT) * MAZE_SVG_SCALE, 51.5, -90 * DEG],
+        goal: [(431.147 - MAZE_FRAME_LEFT) * MAZE_SVG_SCALE, 6.0, -90 * DEG]
       },
       parking: {
         name: "parking",
@@ -428,8 +488,8 @@
         start: [18.5, 6.2, 0],
         goal: [10.4, 3.3, 0]
       },
-      parking2_2: {
-        name: "parking2_2",
+      parking2_hard: {
+        name: "parking2_hard",
         title: "Parallel-parking environment v2.2",
         width: 30,
         height: 12,
@@ -492,8 +552,8 @@
     };
 
     const state = {
-      env: ENVIRONMENTS.parking2_2,
-      pose: [...ENVIRONMENTS.parking2_2.start],
+      env: ENVIRONMENTS.parking,
+      pose: [...ENVIRONMENTS.parking.start],
       steer: 0,
       status: "Ready",
       running: true,

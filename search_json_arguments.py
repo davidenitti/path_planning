@@ -2,14 +2,15 @@
 """Print JSON files whose ``arguments`` object matches every requested filter.
 
 Examples:
-    python hybrid_a_star/search_json_arguments.py \
-        --root hybrid_a_star/parking2_2 heuristic=default no_animation=false
-    python hybrid_a_star/search_json_arguments.py reverse_multiplier=1.1
+    python search_json_arguments.py \
+        --root results heuristic=default save_video=true
+    python search_json_arguments.py reverse_multiplier=1.1
 
-Unquoted values that are valid JSON scalars are parsed as their JSON type, so
+Unquoted supported JSON scalar values are parsed as their JSON type, so
 ``false``, ``42``, and ``0.15`` match booleans, integers, and floats. Other
-unquoted values are strings. To match a string that looks like a JSON scalar,
-pass it as a JSON string, for example ``mode='"true"'``.
+unquoted values are strings; JSON ``null``, arrays, and objects are not supported.
+To match a string that looks like a JSON scalar, pass it as a JSON string, for
+example ``mode='"true"'``.
 """
 
 import argparse
@@ -17,7 +18,6 @@ import json
 import math
 from pathlib import Path
 from typing import TypeAlias
-
 
 ArgumentValue: TypeAlias = str | int | float | bool
 Filter: TypeAlias = tuple[str, ArgumentValue]
@@ -79,8 +79,7 @@ def matches_filters(arguments: object, filters: list[Filter]) -> bool:
         Whether every requested argument is present and matches exactly.
     """
     return isinstance(arguments, dict) and all(
-        name in arguments and values_match(arguments[name], expected)
-        for name, expected in filters
+        name in arguments and values_match(arguments[name], expected) for name, expected in filters
     )
 
 
@@ -159,7 +158,10 @@ def main() -> int:
     """Run the JSON argument search command.
 
     Returns:
-        Zero after printing each matching path, one for an invalid search root.
+        Zero after printing each matching path.
+
+    Raises:
+        SystemExit: If command-line parsing fails or a requested root is invalid.
     """
     arguments = parse_arguments()
     try:

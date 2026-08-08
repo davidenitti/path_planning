@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+import pytest
 
 matplotlib.use("Agg")
 
@@ -51,9 +52,7 @@ def test_save_results_csv_orders_metrics_and_arguments(tmp_path: Path, monkeypat
     assert csv_path == tmp_path / "all_results.csv"
 
 
-def test_save_results_csv_groups_environments_and_sorts_path_length(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_save_results_csv_groups_environments_and_sorts_path_length(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(batch, "ENVIRONMENTS", ["parking", "walls"])
     monkeypatch.setattr(batch, "PARAMETER_VALUES", {})
     results: list[batch.Result] = [
@@ -68,10 +67,7 @@ def test_save_results_csv_groups_environments_and_sorts_path_length(
 
     with csv_path.open(newline="", encoding="utf-8") as csv_file:
         rows = list(csv.DictReader(csv_file))
-    assert [
-        (row["environment"], row["path_length_m"], row["action_set_expansions"])
-        for row in rows
-    ] == [
+    assert [(row["environment"], row["path_length_m"], row["action_set_expansions"]) for row in rows] == [
         ("parking", "3.0", ""),
         ("walls", "1.0", "10"),
         ("walls", "1.0", "20"),
@@ -80,7 +76,7 @@ def test_save_results_csv_groups_environments_and_sorts_path_length(
     ]
 
 
-def test_argument_combinations_skip_inactive_queue_and_bound_options(monkeypatch) -> None:
+def test_argument_combinations_skip_inactive_queue_options(monkeypatch) -> None:
     monkeypatch.setattr(batch, "ENVIRONMENTS", ["test_env"])
     monkeypatch.setattr(
         batch,
@@ -92,32 +88,35 @@ def test_argument_combinations_skip_inactive_queue_and_bound_options(monkeypatch
             "origin_priority_factor": [1.0, 2.0],
             "max_consecutive_coarse_expansions": [0, 10],
             "post_goal_expansions": [0, 1],
-            "enable_admissible_bound": [False, True],
         },
     )
 
     combinations = list(batch.argument_combinations())
 
-    fine_only = [arguments for arguments in combinations if not arguments.two_queues]
+    single_queue = [arguments for arguments in combinations if not arguments.two_queues]
     two_queue = [arguments for arguments in combinations if arguments.two_queues]
-    assert len(fine_only) == 3
+    assert len(single_queue) == 2
     assert len(two_queue) == 32
     assert all(
         arguments.coarse_primitive_mult == 4
         and arguments.queue_beta == 1.0
         and arguments.origin_priority_factor == 1.0
         and arguments.max_consecutive_coarse_expansions == 0
-        for arguments in fine_only
-    )
-    assert all(not arguments.enable_admissible_bound for arguments in two_queue)
-    assert all(
-        arguments.post_goal_expansions == 0
-        for arguments in fine_only
-        if arguments.enable_admissible_bound
+        for arguments in single_queue
     )
 
 
-def test_varying_arguments_omit_queue_options_for_fine_only_results(monkeypatch) -> None:
+def test_default_batch_arguments_supply_main_animation_options() -> None:
+    arguments = next(batch.argument_combinations())
+
+    assert "enable_admissible_bound" not in batch.PARAMETER_VALUES
+    assert not hasattr(arguments, "enable_admissible_bound")
+    assert arguments.animation_format in {"mp4", "gif"}
+    assert not arguments.save_video
+    assert arguments.no_animation_plot
+
+
+def test_varying_arguments_omit_queue_options_for_single_queue_results(monkeypatch) -> None:
     monkeypatch.setattr(
         batch,
         "PARAMETER_VALUES",
@@ -125,46 +124,24 @@ def test_varying_arguments_omit_queue_options_for_fine_only_results(monkeypatch)
             "two_queues": [False, True],
             "queue_beta": [1.0, 1.5],
             "origin_priority_factor": [1.0, 2.0],
-            "enable_admissible_bound": [False, True],
             "reverse_multiplier": [1.0, 1.1],
         },
     )
-    fine_only_result: batch.Result = {
+    single_queue_result: batch.Result = {
         "arguments": {
             "two_queues": False,
             "queue_beta": 1.0,
             "origin_priority_factor": 1.0,
-            "enable_admissible_bound": False,
             "reverse_multiplier": 1.1,
         }
     }
 
-    formatted_arguments = batch._varying_arguments(fine_only_result)
+    formatted_arguments = batch._varying_arguments(single_queue_result)
 
     assert "two_queues=False" in formatted_arguments
     assert "reverse_multiplier=1.1" in formatted_arguments
     assert "queue_beta" not in formatted_arguments
     assert "origin_priority_factor" not in formatted_arguments
-
-
-def test_varying_arguments_omit_bound_option_for_two_queue_results(monkeypatch) -> None:
-    monkeypatch.setattr(
-        batch,
-        "PARAMETER_VALUES",
-        {
-            "two_queues": [False, True],
-            "enable_admissible_bound": [False, True],
-        },
-    )
-    result: batch.Result = {
-        "arguments": {"two_queues": True, "enable_admissible_bound": False}
-    }
-
-    formatted_arguments = batch._varying_arguments(result)
-
-    assert "two_queues=True" in formatted_arguments
-    assert "enable_admissible_bound" not in formatted_arguments
-
 
 def test_update_best_results_retains_all_tied_runs_and_prints_them(monkeypatch, capsys) -> None:
     monkeypatch.setattr(batch, "PARAMETER_VALUES", {"variant": ["first", "second"]})
@@ -246,7 +223,7 @@ def test_run_all_persists_failed_runs_without_updating_bests(
     assert result["path_length_m"] is None
     assert result["search_cost"] is None
     assert result["action_set_expansions"] is None
-    assert batch.load_results(tmp_path / "all_results2" / "all_results2.json") == results
+    assert batch.load_results(tmp_path / "all_results2.json") == results
     output = capsys.readouterr().out
     assert "Planning failed for run 1/1: No path found" in output
     assert "Best: test_env" not in output
@@ -287,8 +264,8 @@ def test_run_all_saves_each_result_and_resumes(
 
     assert len(first_results) == 2
     assert len(calls) == 2
-    assert batch.load_results(tmp_path / "all_results2" / "all_results2.json") == first_results
-    assert (tmp_path / "all_results2" / "all_results2.csv").exists()
+    assert batch.load_results(tmp_path / "all_results2.json") == first_results
+    assert (tmp_path / "all_results2.csv").exists()
     first_output = capsys.readouterr().out
     assert "varied=" in first_output
     assert "fixed=" not in first_output
@@ -313,7 +290,7 @@ def test_run_all_read_only_writes_csv(tmp_path: Path, monkeypatch, capsys) -> No
     monkeypatch.setattr(batch, "ENVIRONMENTS", ["test_env"])
     monkeypatch.setattr(batch, "PARAMETER_VALUES", {"option": [1]})
     batch.save_results(
-        tmp_path / "all_results" / "all_results.json",
+        tmp_path / "all_results.json",
         [
             {
                 "environment": "test_env",
@@ -333,18 +310,8 @@ def test_run_all_read_only_writes_csv(tmp_path: Path, monkeypatch, capsys) -> No
     )
 
     assert results[0]["environment"] == "test_env"
-    assert (tmp_path / "all_results" / "all_results.csv").exists()
+    assert (tmp_path / "all_results.csv").exists()
     assert "Aggregate results CSV:" in capsys.readouterr().out
-
-
-def test_parse_args_uses_named_output_defaults(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["run_hybrid_astar_batch.py"])
-
-    arguments = batch.parse_args()
-
-    assert arguments.output_dir == Path("./hybrid_a_star")
-    assert arguments.name == "all_results"
-    assert arguments.workers == 10
 
 
 def test_parse_args_accepts_parallel_workers(monkeypatch) -> None:

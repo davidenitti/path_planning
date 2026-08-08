@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Run every configured two-queue Hybrid A* parameter combination.
+"""Run every configured single-queue and two-queue Hybrid A* parameter combination.
 
 Edit the lists below to define the parameter sweep. Each environment is run for
-every Cartesian-product combination of ``PARAMETER_VALUES``.
+every supported, non-redundant Cartesian-product combination of
+``PARAMETER_VALUES``; settings that are inactive in the selected search mode
+are collapsed to their first configured value.
 """
 
 import matplotlib
@@ -23,13 +25,14 @@ from typing import Iterator
 
 from tqdm import tqdm
 
-from hybrid_astar_demo import main
+from hybrid_astar_main import main
 
 ENVIRONMENTS = [
     "walls",
+    "maze",
     "parking",
     "parking2",
-    "parking2_2",
+    "parking2_hard",
     "parking3",
     "parking4",
 ]
@@ -57,11 +60,10 @@ PARAMETER_VALUES = {
     "heuristic_weight": [1.0, 1.2],
     "coarse_heuristic_weight": [None, 1.6],
     "post_goal_expansions": [200000],
-    "enable_admissible_bound": [False, True],
     "max_expansions": [1_000_000],
     "max_consecutive_coarse_expansions": [10],
     "live_plot_every": [0],
-    "no_animation": [True],
+    "save_video": [False],
 }
 Result = dict[str, object]
 BestResults = dict[str, dict[str, list[Result]]]
@@ -93,7 +95,6 @@ QUEUE_ONLY_PARAMETERS = (
     "coarse_heuristic_weight",
     "max_consecutive_coarse_expansions",
 )
-FINE_ONLY_PARAMETERS = ("enable_admissible_bound",)
 
 
 def _uses_first_parameter_value(arguments: argparse.Namespace, name: str) -> bool:
@@ -111,24 +112,17 @@ def _uses_first_parameter_value(arguments: argparse.Namespace, name: str) -> boo
 
 
 def is_redundant_combination(arguments: argparse.Namespace) -> bool:
-    """Return whether a configuration differs only in inactive parameters.
+    """Return whether a configuration is unsupported or duplicates active settings.
 
     Args:
         arguments: Candidate batch-run arguments.
 
     Returns:
-        Whether the candidate would duplicate a run with active parameters unchanged.
+        Whether the candidate is invalid or would duplicate a run with active
+        parameters unchanged.
     """
-    if not getattr(arguments, "two_queues", True) and any(
+    return not getattr(arguments, "two_queues", True) and any(
         not _uses_first_parameter_value(arguments, name) for name in QUEUE_ONLY_PARAMETERS
-    ):
-        return True
-    if getattr(arguments, "two_queues", False) and any(
-        not _uses_first_parameter_value(arguments, name) for name in FINE_ONLY_PARAMETERS
-    ):
-        return True
-    return getattr(arguments, "enable_admissible_bound", False) and not _uses_first_parameter_value(
-        arguments, "post_goal_expansions"
     )
 
 
@@ -141,7 +135,11 @@ def argument_combinations() -> Iterator[argparse.Namespace]:
     names = tuple(PARAMETER_VALUES)
     for environment in ENVIRONMENTS:
         for values in product(*(PARAMETER_VALUES[name] for name in names)):
-            arguments = argparse.Namespace(env=environment, **dict(zip(names, values)))
+            values_by_name = dict(zip(names, values))
+            # Supply output-only CLI defaults that are intentionally not sweep axes.
+            values_by_name.setdefault("animation_format", "mp4")
+            values_by_name.setdefault("no_animation_plot", True)
+            arguments = argparse.Namespace(env=environment, **values_by_name)
             if not is_redundant_combination(arguments):
                 yield arguments
 
@@ -188,13 +186,14 @@ def result_configuration_key(result: Result) -> str:
 
 
 def load_results(path: Path) -> list[Result]:
-    """Load completed results when an aggregate file already exists.
+    """Load recorded results when an aggregate file already exists.
 
     Args:
         path: Aggregate JSON path.
 
     Returns:
-        Previously completed results, or an empty list when the file is absent.
+        Previously recorded successful and failed results, or an empty list
+        when the file is absent.
 
     Raises:
         ValueError: If the aggregate JSON is not a list of dictionaries.
@@ -212,7 +211,7 @@ def failed_result(arguments: argparse.Namespace, error: Exception) -> Result:
 
     Args:
         arguments: Complete arguments passed to the failed planner run.
-        error: Planning failure raised by ``main``.
+        error: Exception raised while running the configuration.
 
     Returns:
         A result dictionary with unavailable search metrics set to ``None``.
@@ -239,11 +238,11 @@ def failed_result(arguments: argparse.Namespace, error: Exception) -> Result:
 
 
 def save_results(path: Path, results: list[Result]) -> None:
-    """Atomically save all completed batch results.
+    """Atomically save all recorded batch results.
 
     Args:
         path: Aggregate JSON path.
-        results: Completed result dictionaries.
+        results: Successful or failed result dictionaries.
 
     Returns:
         None.
@@ -263,7 +262,7 @@ def save_results_csv(aggregate_path: Path, results: list[Result]) -> Path:
 
     Args:
         aggregate_path: Aggregate JSON path whose extension is replaced with ``.csv``.
-        results: Completed or failed batch-run result dictionaries.
+        results: Successful or failed batch-run result dictionaries.
 
     Returns:
         The written CSV path.
@@ -318,8 +317,8 @@ def update_best_results(best_results: BestResults, result: Result) -> bool:
         result: Newly available run result.
 
     Returns:
-        Whether the result set a new best value or tied an existing best value for
-        at least one tracked metric.
+        Whether the result set a new best value or came within ``0.01`` of an
+        existing best value for at least one tracked metric.
     """
     improved = False
     eps = 1e-2
@@ -356,7 +355,7 @@ def _varying_arguments(result: Result) -> str:
         result: Result whose arguments should be formatted.
 
     Returns:
-        Comma-separated varying arguments, or an empty string if none vary.
+        Space-separated varying arguments, or an empty string if none vary.
     """
     arguments = result["arguments"]
     assert isinstance(arguments, dict)
@@ -365,7 +364,6 @@ def _varying_arguments(result: Result) -> str:
         for name, values in PARAMETER_VALUES.items()
         if len(values) > 1
         and (arguments.get("two_queues", True) or name not in QUEUE_ONLY_PARAMETERS)
-        and (not arguments.get("two_queues", False) or name not in FINE_ONLY_PARAMETERS)
     )
 
 
@@ -407,7 +405,7 @@ def run_configuration(
         output_directory: Root directory for all batch-run output.
 
     Returns:
-        The configuration index, its arguments, and its completed or failed result.
+        The configuration index, its arguments, and its successful or failed result.
     """
     arguments.output_dir = output_directory / f"run_{index:04d}"
     try:
@@ -432,7 +430,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("./hybrid_a_star"),
+        default=Path("./results"),
         help="Parent directory for the named batch-run output directory.",
     )
     parser.add_argument(
@@ -464,6 +462,7 @@ def positive_int(value: str) -> int:
         The parsed positive integer.
 
     Raises:
+        ValueError: If conversion to int fails.
         argparse.ArgumentTypeError: If the number is not positive.
     """
     number = int(value)
@@ -478,18 +477,19 @@ def run_all(
     workers: int,
     read_only: bool,
 ) -> list[Result]:
-    """Execute every configured environment and parameter combination.
+    """Run pending configurations or rebuild aggregates from recorded results.
 
     Args:
-        output_directory: Parent directory for the named batch-run output directory.
-        name: Batch run name, used for the output subdirectory and aggregate filename.
+        output_directory: Root directory for aggregate files and batch-run output.
+        name: Batch run name, used for the run output subdirectory and aggregate filename.
         workers: Number of planner processes to run concurrently.
+        read_only: Whether to regenerate the aggregate CSV without running planners.
 
     Returns:
-        Metrics and output paths for every completed planning run.
+        Result records for every successful or failed planning run.
     """
-    output_directory = output_directory / name
     aggregate_path = output_directory / f"{name}.json"
+    output_directory = output_directory / name
     results = load_results(aggregate_path)
     completed_keys = {result_configuration_key(result) for result in results}
     best_results: BestResults = {}
@@ -518,7 +518,7 @@ def run_all(
             print(f"Skipping completed run {index}/{len(configurations)}: {arguments.env}")
 
     def record_result(index: int, arguments: argparse.Namespace, result: Result) -> None:
-        """Persist and report one completed planner result."""
+        """Persist and report one successful or failed planner result."""
         if result.get("error"):
             print(f"Planning failed for run {index}/{len(configurations)}: {result['error']}")
         results.append(result)

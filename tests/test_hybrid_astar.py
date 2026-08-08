@@ -1,8 +1,10 @@
+import ast
 import heapq
 import inspect
 import math
 from collections import defaultdict
 from collections.abc import Iterator
+from pathlib import Path
 
 import matplotlib
 
@@ -11,8 +13,10 @@ matplotlib.use("Agg")
 import numpy as np
 import pytest
 
-import hybrid_astar_demo as planner_module
-from hybrid_astar_demo import (
+import hybrid_astar_main as demo_module
+import hybrid_astar_planner as planner_module
+import hybrid_astar_two_queues as two_queue_module
+from hybrid_astar_planner import (
     Environment,
     HybridAStar,
     Node,
@@ -20,8 +24,10 @@ from hybrid_astar_demo import (
     Vehicle,
     _sample_collision_free_primitive,
     arc_pose,
+    make_environment,
     sample_distances,
 )
+from hybrid_astar_two_queues import TwoQueueHybridAStar
 
 
 def make_planner(
@@ -63,7 +69,7 @@ def make_planner(
             "steering_change_penalty": steering_change_penalty,
         },
     )
-    planner = HybridAStar(
+    common_kwargs = dict(
         environment=environment,
         vehicle=Vehicle(),
         safety_margin=0.0,
@@ -72,14 +78,84 @@ def make_planner(
         heuristic_mode=heuristic_mode,
         state_key_mode=state_key_mode,
         heuristic_weight=heuristic_weight,
-        use_two_queues=use_two_queues,
-        coarse_heuristic_weight=coarse_heuristic_weight,
-        coarse_primitive_mult=coarse_primitive_mult,
-        queue_beta=queue_beta,
-        origin_priority_factor=origin_priority_factor,
     )
+    if use_two_queues:
+        planner = TwoQueueHybridAStar(
+            **common_kwargs,
+            coarse_heuristic_weight=coarse_heuristic_weight,
+            coarse_primitive_mult=coarse_primitive_mult,
+            queue_beta=queue_beta,
+            origin_priority_factor=origin_priority_factor,
+        )
+    else:
+        planner = HybridAStar(**common_kwargs)
     planner.goal = goal
     return planner
+
+
+def test_maze_environment_is_available_with_a_navigable_point_robot_route() -> None:
+    environment = make_environment(
+        "maze",
+        {
+            "xy_resolution": 0.25,
+            "yaw_resolution": math.radians(5.0),
+            "primitive_length": 0.5,
+            "position_tolerance": 0.3,
+            "yaw_tolerance": math.radians(2.0),
+            "reverse_multiplier": 1.65,
+            "gear_change_penalty": 0.0,
+            "steering_change_penalty": 0.0,
+        },
+    )
+
+    assert environment.name == "maze"
+    assert environment.width == pytest.approx(109.26225)
+    assert environment.height == pytest.approx(56.8035)
+    assert environment.start == pytest.approx((6.5325, 51.5, math.radians(-90.0)))
+    assert environment.goal == pytest.approx((102.68425, 6.0, math.radians(-90.0)))
+    assert len(environment.obstacles) == 32
+    assert min(obstacle.xmin for obstacle in environment.obstacles) == pytest.approx(0.0)
+    assert max(obstacle.xmax for obstacle in environment.obstacles) == pytest.approx(
+        environment.width
+    )
+    assert min(obstacle.ymin for obstacle in environment.obstacles) == pytest.approx(0.0)
+    assert max(obstacle.ymax for obstacle in environment.obstacles) == pytest.approx(
+        environment.height
+    )
+    first_wall = environment.obstacles[0]
+    assert (first_wall.xmin, first_wall.xmax, first_wall.ymin, first_wall.ymax) == pytest.approx(
+        (0.0, 2.5, 0.0, environment.height)
+    )
+    right_wall = environment.obstacles[5]
+    assert (right_wall.ymin, right_wall.ymax) == pytest.approx((0.0, environment.height))
+    last_wall = environment.obstacles[-1]
+    assert (last_wall.xmin, last_wall.xmax, last_wall.ymin, last_wall.ymax) == pytest.approx(
+        (64.13925, 66.63925, 1.25, 12.7255)
+    )
+
+    planner = HybridAStar(environment, Vehicle(), 0.2, 0.1, 0.05)
+    assert not planner.collides(*environment.start)
+    assert not planner.collides(*environment.goal)
+    assert planner.collides(-0.1, environment.height / 2.0, 0.0)
+    assert planner.collides(environment.width + 0.1, environment.height / 2.0, 0.0)
+
+    from hybrid_astar_corridor import CoarsePathCorridor
+
+    corridor = CoarsePathCorridor(
+        environment.width,
+        environment.height,
+        tuple(
+            (obstacle.xmin, obstacle.xmax, obstacle.ymin, obstacle.ymax)
+            for obstacle in environment.obstacles
+        ),
+        coarse_resolution=1.0,
+        corridor_width=1.0,
+        obstacle_clearance=1.1,
+    )
+    path = corridor.build(environment.start[:2], environment.goal[:2])
+
+    assert len(path) > 100
+    assert corridor.path_length > 100.0
 
 
 def make_node(
@@ -141,6 +217,11 @@ def test_node_is_compact_identity_based_and_stores_edge_length() -> None:
     assert first != second
 
 
+def test_collision_kernel_remains_numba_jitted_with_disk_cache() -> None:
+    assert hasattr(_sample_collision_free_primitive, "py_func")
+    assert _sample_collision_free_primitive._cache is not None
+
+
 def test_empty_collision_sampling_returns_the_input_pose() -> None:
     pose = (4.25, 6.75, -0.4)
     result = _sample_collision_free_primitive(
@@ -170,9 +251,9 @@ def test_collision_kernel_endpoint_matches_exact_arc(
     planner = make_planner(use_two_queues=True, coarse_primitive_mult=4)
     start = make_node(8.0, 0.0, y=9.0, yaw=0.35)
     if queue_name == "fine":
-        length = planner.fine_primitive_length
-        collision_distances = planner._fine_collision_distances
-        steer_indices = planner.fine_steer_indices
+        length = planner.primitive_length
+        collision_distances = planner._collision_distances
+        steer_indices = planner.steer_indices
     else:
         length = planner.coarse_primitive_length
         collision_distances = planner._coarse_collision_distances
@@ -210,17 +291,17 @@ def test_reconstruct_regenerates_mixed_length_samples_and_controls() -> None:
         root.x,
         root.y,
         root.yaw,
-        planner.fine_primitive_length,
+        planner.primitive_length,
         float(planner.steers[first_steer_index]),
         planner.vehicle.wheelbase,
     )
     first = Node(
         *first_pose,
-        planner.fine_primitive_length,
+        planner.primitive_length,
         root,
         1,
         first_steer_index,
-        planner.fine_primitive_length,
+        planner.primitive_length,
     )
 
     second_steer_index = 0
@@ -306,7 +387,7 @@ def test_real_plan_nodes_remain_compact_and_have_direct_parents() -> None:
     assert chain[0].parent is None
     assert chain[0].primitive_length == 0.0
     assert all(node.parent is chain[index - 1] for index, node in enumerate(chain[1:], start=1))
-    assert all(node.primitive_length == planner.fine_primitive_length for node in chain[1:])
+    assert all(node.primitive_length == planner.primitive_length for node in chain[1:])
     assert all(not hasattr(node, "__dict__") for node in chain)
     assert all(not hasattr(node, "segment") for node in chain)
     assert len(path) == len(directions) == len(steers)
@@ -352,8 +433,7 @@ def test_live_search_selects_minimum_heuristic_across_open_and_closed_states() -
         published.append((best_total, best_heuristic))
 
     planner._publish_search_state(
-        fine_closed={closed_key},
-        coarse_closed=set(),
+        closed={closed_key},
         nodes={open_key: open_node, closed_key: closed_node},
         progress_callback=capture,
     )
@@ -364,42 +444,68 @@ def test_live_search_selects_minimum_heuristic_across_open_and_closed_states() -
     assert best_heuristic.node is closed_node
 
 
-def test_admissible_a_star_bound_ends_search_without_post_goal_expansions() -> None:
-    goal = (5.5, 5.0, 0.0)
-    planner = make_planner(
-        goal,
-        position_tolerance=0.01,
-        yaw_tolerance=0.01,
+def test_live_dijkstra_cost_to_goal_view_uses_the_cached_grid() -> None:
+    planner = make_planner(heuristic_mode="dijkstra")
+    planner.goal = planner.environment.goal
+    planner.heuristic(*planner.environment.start)
+    assert planner._dijkstra_cost_to_goal is not None
+    node = Node(*planner.environment.start, 0.0, None, 1, 2, 0.0)
+    snapshot = planner_module.SearchSnapshot(
+        node=node,
+        path=np.asarray([planner.environment.start]),
+        heuristic=planner.heuristic(*planner.environment.start),
+        total_estimate=0.0,
     )
-    _, _, _, terminal = planner.plan(
-        planner.environment.start,
-        goal,
-        max_expansions=100,
-        post_goal_expansions=50,
-        enable_admissible_bound=True,
-    )
-
-    assert terminal.cost == pytest.approx(planner.fine_primitive_length)
-    assert planner.expansion_count == 2
-
-
-def test_weighted_a_star_uses_the_unweighted_f_queue_for_its_goal_bound() -> None:
-    goal = (5.5, 5.0, 0.0)
-    planner = make_planner(
-        goal,
-        heuristic_weight=1.5,
-        position_tolerance=0.01,
-        yaw_tolerance=0.01,
-    )
-    planner.plan(
-        planner.environment.start,
-        goal,
-        max_expansions=100,
-        post_goal_expansions=50,
-        enable_admissible_bound=True,
+    state = planner_module.SearchNodeState(
+        node=node,
+        heuristic=snapshot.heuristic,
+        total_estimate=0.0,
+        closed=False,
     )
 
-    assert planner.expansion_count == 2
+    plot = demo_module.LiveSearchPlot(planner, planner.environment)
+    try:
+        plot.update(7, snapshot, snapshot, (state,))
+        view = plot.dijkstra_cost_to_goal
+
+        np.testing.assert_allclose(
+            view.heatmap.get_array().filled(np.nan),
+            planner._dijkstra_cost_to_goal,
+            equal_nan=True,
+        )
+        assert tuple(view.heatmap.get_extent()) == (
+            -0.5 * planner.xy_resolution,
+            (planner._dijkstra_cost_to_goal.shape[1] - 0.5) * planner.xy_resolution,
+            -0.5 * planner.xy_resolution,
+            (planner._dijkstra_cost_to_goal.shape[0] - 0.5) * planner.xy_resolution,
+        )
+        assert len(plot.fig.axes) == 6
+        assert "expansion 7" in view.ax.get_title()
+    finally:
+        demo_module.plt.close(plot.fig)
+
+
+def test_dijkstra_grid_blocks_obstacle_boundaries() -> None:
+    obstacle = Obstacle(7.0, 9.0, 0.0, 10.0)
+    planner = make_planner(heuristic_mode="dijkstra", obstacles=(obstacle,))
+
+    costs = planner._build_2d_dijkstra_to_goal_region()
+    resolution = planner.xy_resolution
+
+    assert math.isinf(costs[round(0.0 / resolution), round(8.0 / resolution)])
+    assert math.isinf(costs[round(5.0 / resolution), round(7.0 / resolution)])
+    assert math.isinf(costs[round(10.0 / resolution), round(8.0 / resolution)])
+
+
+def test_live_plot_omits_dijkstra_view_for_other_heuristics() -> None:
+    planner = make_planner(heuristic_mode="distance")
+
+    plot = demo_module.LiveSearchPlot(planner, planner.environment)
+    try:
+        assert plot.dijkstra_cost_to_goal is None
+        assert len(plot.fig.axes) == 4
+    finally:
+        demo_module.plt.close(plot.fig)
 
 
 def test_control_aware_state_key_distinguishes_incoming_controls() -> None:
@@ -423,10 +529,10 @@ def test_gear_change_penalty_uses_parent_presence_and_selected_edge_length() -> 
     root = make_node(5.0, 0.0, parent=None, direction=1)
     child = make_node(
         5.5,
-        planner.fine_primitive_length,
+        planner.primitive_length,
         parent=root,
         direction=1,
-        primitive_length=planner.fine_primitive_length,
+        primitive_length=planner.primitive_length,
     )
 
     root_reverse_cost = planner._successor_cost(
@@ -461,7 +567,7 @@ def test_steering_change_is_an_event_cost_for_fine_and_coarse_edges() -> None:
         parent,
         1,
         target_steer_index,
-        planner.fine_primitive_length,
+        planner.primitive_length,
     )
     coarse_cost = planner._successor_cost(
         parent,
@@ -470,8 +576,8 @@ def test_steering_change_is_an_event_cost_for_fine_and_coarse_edges() -> None:
         planner.coarse_primitive_length,
     )
 
-    event_cost = planner.fine_primitive_length * planner.steering_change_penalty
-    assert fine_cost == pytest.approx(planner.fine_primitive_length + event_cost)
+    event_cost = planner.primitive_length * planner.steering_change_penalty
+    assert fine_cost == pytest.approx(planner.primitive_length + event_cost)
     assert coarse_cost == pytest.approx(planner.coarse_primitive_length + event_cost)
 
 
@@ -479,6 +585,12 @@ def test_sample_distances_always_contains_exact_endpoint() -> None:
     assert sample_distances(0.5, 0.2) == pytest.approx([0.2, 0.4, 0.5])
     assert sample_distances(0.5, 0.1)[-1] == pytest.approx(0.5)
     assert sample_distances(0.05, 0.1) == pytest.approx([0.05])
+
+
+def test_straight_arc_wraps_input_yaw() -> None:
+    pose = arc_pose(1.0, 2.0, 4.0 * math.pi, 0.5, 0.0, 2.6)
+
+    assert pose == pytest.approx((1.5, 2.0, 0.0))
 
 
 def test_cyclic_yaw_key_matches_across_angle_seam() -> None:
@@ -519,14 +631,14 @@ def test_heuristic_modes_match_their_documented_definitions() -> None:
 def test_two_queue_configuration_defaults_and_validation() -> None:
     planner = make_planner(use_two_queues=True)
 
-    assert planner.coarse_primitive_length == pytest.approx(4 * planner.fine_primitive_length)
+    assert planner.coarse_primitive_length == pytest.approx(4 * planner.primitive_length)
     assert planner.coarse_heuristic_weight == planner.heuristic_weight
     assert planner.coarse_steer_indices == (0, len(planner.steers) // 2, len(planner.steers) - 1)
-    assert planner.fine_steer_indices == tuple(range(len(planner.steers)))
+    assert planner.steer_indices == tuple(range(len(planner.steers)))
 
     with pytest.raises(ValueError, match="coarse_primitive_mult"):
         make_planner(use_two_queues=True, coarse_primitive_mult=0)
-    with pytest.raises(AssertionError, match="coarse_primitive_mult"):
+    with pytest.raises(ValueError, match="coarse_primitive_mult"):
         make_planner(use_two_queues=True, coarse_primitive_mult=1.5)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="queue_beta"):
         make_planner(use_two_queues=True, queue_beta=0.99)
@@ -557,7 +669,7 @@ def test_coarse_heuristic_weight_only_changes_coarse_queue_priority(
         captured.append(item)
         original_heappush(heap, item)
 
-    monkeypatch.setattr(planner_module.heapq, "heappush", recording_heappush)
+    monkeypatch.setattr(two_queue_module.heapq, "heappush", recording_heappush)
 
     with pytest.raises(RuntimeError, match="No path found"):
         planner.plan(
@@ -597,7 +709,27 @@ def test_two_queue_plan_can_reach_goal_with_one_coarse_edge() -> None:
     assert np.allclose(steers, 0.0)
 
 
-def test_fine_only_plan_never_records_coarse_expansions_or_edges() -> None:
+def test_no_path_errors_report_queue_breakdown_without_base_queue_state() -> None:
+    base = make_planner(goal=(25.0, 15.0, 0.0), use_two_queues=False)
+    with pytest.raises(
+        RuntimeError,
+        match=r"\(1 fine, 0 coarse; two_queue=False\)",
+    ):
+        base.plan(base.environment.start, base.environment.goal, max_expansions=1)
+
+    derived = make_planner(goal=(25.0, 15.0, 0.0), use_two_queues=True)
+    with pytest.raises(
+        RuntimeError,
+        match=r"\([01] fine, [01] coarse; two_queue=True\)",
+    ):
+        derived.plan(
+            derived.environment.start,
+            derived.environment.goal,
+            max_expansions=1,
+        )
+
+
+def test_base_plan_uses_only_standard_primitives_and_has_no_queue_specific_state() -> None:
     goal = (7.0, 5.0, 0.0)
     planner = make_planner(
         goal,
@@ -613,9 +745,11 @@ def test_fine_only_plan_never_records_coarse_expansions_or_edges() -> None:
     )
 
     chain = chain_from_terminal(terminal)
-    assert planner.coarse_expansion_count == 0
-    assert planner.fine_expansion_count == planner.expansion_count
-    assert all(node.primitive_length == planner.fine_primitive_length for node in chain[1:])
+    assert all(node.primitive_length == planner.primitive_length for node in chain[1:])
+    assert not any(name.startswith("fine_") for name in planner.__dict__)
+    assert not any(name.startswith("coarse_") for name in planner.__dict__)
+    assert "use_two_queues" not in planner.__dict__
+    assert "last_expansion_queue" not in planner.__dict__
 
 
 def test_separate_closed_sets_allow_same_start_state_to_receive_both_action_sets() -> None:
@@ -684,7 +818,7 @@ def test_origin_priority_factor_is_a_one_sided_coarse_queue_bias(
         captured.append(item)
         original_heappush(heap, item)
 
-    monkeypatch.setattr(planner_module.heapq, "heappush", recording_heappush)
+    monkeypatch.setattr(two_queue_module.heapq, "heappush", recording_heappush)
 
     with pytest.raises(RuntimeError, match="No path found"):
         planner.plan(
@@ -707,8 +841,12 @@ def test_origin_priority_factor_is_a_one_sided_coarse_queue_bias(
 
 def test_cost_only_plan_api_has_no_terminal_selection_parameter() -> None:
     signature = inspect.signature(HybridAStar.plan)
+    two_queue_signature = inspect.signature(TwoQueueHybridAStar.plan)
 
     assert "terminal_selection" not in signature.parameters
+    assert "enable_admissible_bound" not in signature.parameters
+    assert "enable_admissible_bound" not in two_queue_signature.parameters
+    assert "max_consecutive_coarse_expansions" not in signature.parameters
     assert not hasattr(planner_module, "TerminalSelection")
     assert not hasattr(HybridAStar, "_terminal_score")
 
@@ -718,9 +856,9 @@ def test_exact_path_length_sums_stored_primitive_lengths() -> None:
     root = make_node(6.0, 0.0, y=7.0, yaw=0.2)
     first = make_node(
         6.5,
-        planner.fine_primitive_length,
+        planner.primitive_length,
         parent=root,
-        primitive_length=planner.fine_primitive_length,
+        primitive_length=planner.primitive_length,
     )
     terminal = make_node(
         8.0,
@@ -730,34 +868,8 @@ def test_exact_path_length_sums_stored_primitive_lengths() -> None:
     )
 
     assert planner.exact_path_length(terminal) == pytest.approx(
-        planner.fine_primitive_length + planner.coarse_primitive_length
+        planner.primitive_length + planner.coarse_primitive_length
     )
-
-
-def test_enabled_bound_can_be_satisfied_on_final_allowed_expansion(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    goal = (5.5, 5.0, 0.0)
-    planner = make_planner(
-        goal,
-        heuristic_mode="tolerance",
-        position_tolerance=0.01,
-        yaw_tolerance=0.01,
-    )
-
-    _, _, _, terminal = planner.plan(
-        planner.environment.start,
-        goal,
-        max_expansions=2,
-        post_goal_expansions=100,
-        enable_admissible_bound=True,
-    )
-    output = capsys.readouterr().out
-
-    assert terminal.cost == pytest.approx(planner.fine_primitive_length)
-    assert planner.expansion_count == 2
-    assert "Bound condition satisfied at expansion 2" in output
-    assert "Warning:" not in output
 
 
 def test_post_goal_budget_is_checked_at_next_loop_top() -> None:
@@ -773,7 +885,6 @@ def test_post_goal_budget_is_checked_at_next_loop_top() -> None:
         goal,
         max_expansions=100,
         post_goal_expansions=1,
-        enable_admissible_bound=False,
     )
 
     assert planner.expansion_count == 3
@@ -813,7 +924,7 @@ def test_zero_post_goal_budget_does_not_expand_accepted_terminal(
     assert planner.expansion_count == 2
 
 
-def test_two_queue_search_uses_post_goal_budget_even_if_bound_requested() -> None:
+def test_two_queue_search_uses_post_goal_budget() -> None:
     goal = (7.0, 5.0, 0.0)
     planner = make_planner(
         goal,
@@ -828,7 +939,6 @@ def test_two_queue_search_uses_post_goal_budget_even_if_bound_requested() -> Non
         goal,
         max_expansions=20,
         post_goal_expansions=1,
-        enable_admissible_bound=True,
     )
 
     assert planner.expansion_count == 3
@@ -856,129 +966,17 @@ def test_open_exhaustion_does_not_claim_max_expansions_was_reached(
     assert "Warning: the search limit was reached" not in output
 
 
-def test_inadmissible_order_uses_separate_tolerance_lower_bound_heap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    planner = make_planner(
-        goal=(25.0, 15.0, 0.0),
-        heuristic_mode="default",
-        heuristic_weight=2.0,
-    )
-    configured_h = 7.0
-    admissible_h = 3.0
-    monkeypatch.setattr(planner, "heuristic", lambda *_: configured_h)
-    monkeypatch.setattr(planner, "_tolerance_aware_lower_bound", lambda *_: admissible_h)
-    captured: list[planner_module.OpenEntry] = []
-    original_heappush = heapq.heappush
-
-    def recording_heappush(
-        heap: list[planner_module.OpenEntry],
-        item: planner_module.OpenEntry,
-    ) -> None:
-        captured.append(item)
-        original_heappush(heap, item)
-
-    monkeypatch.setattr(planner_module.heapq, "heappush", recording_heappush)
-
-    with pytest.raises(RuntimeError, match="No path found"):
-        planner.plan(
-            planner.environment.start,
-            planner.environment.goal,
-            max_expansions=1,
-            enable_admissible_bound=True,
-        )
-
-    by_serial: dict[int, list[planner_module.OpenEntry]] = defaultdict(list)
-    for entry in captured:
-        by_serial[entry[3]].append(entry)
-
-    successor_groups = [entries for serial, entries in by_serial.items() if serial != 0]
-    assert successor_groups
-    for entries in successor_groups:
-        assert len(entries) == 2
-        priorities = sorted(entry[0] for entry in entries)
-        node_cost = entries[0][5].cost
-        assert priorities == pytest.approx(
-            sorted(
-                [
-                    node_cost + admissible_h,
-                    node_cost + planner.heuristic_weight * configured_h,
-                ]
-            )
-        )
-
-
-def test_stop_condition_uses_separate_admissible_lower_bound_heap() -> None:
+def test_post_goal_budget_completion_uses_expansion_count() -> None:
     planner = make_planner()
-    best_terminal = make_node(8.0, 10.0)
-    frontier = make_node(7.0, 4.0)
-    frontier_key = planner._state_key(frontier)
-    nodes = {frontier_key: frontier}
-
-    lower_bound_queue: list[planner_module.OpenEntry] = [
-        (9.0, 5.0, -frontier.cost, 1, frontier_key, frontier)
-    ]
-    heapq.heapify(lower_bound_queue)
-
-    assert not planner.stop_condition(
-        best_terminal,
-        1,
-        True,
-        False,
-        [],
-        lower_bound_queue,
-        set(),
-        nodes,
-        0,
-    )
-
-    lower_bound_queue[0] = (10.0, 6.0, -frontier.cost, 1, frontier_key, frontier)
-    heapq.heapify(lower_bound_queue)
-    assert planner.stop_condition(
-        best_terminal,
-        1,
-        True,
-        False,
-        [],
-        lower_bound_queue,
-        set(),
-        nodes,
-        0,
-    )
-
-
-def test_stop_condition_uses_post_goal_expansion_budget() -> None:
-    planner = make_planner()
-    best_terminal = make_node(8.0, 10.0)
     planner.expansion_count = 12
 
-    assert planner.stop_condition(
-        best_terminal,
-        10,
-        False,
-        False,
-        [],
-        [],
-        set(),
-        {},
-        2,
-    )
-    assert not planner.stop_condition(
-        best_terminal,
-        10,
-        False,
-        False,
-        [],
-        [],
-        set(),
-        {},
-        3,
-    )
+    assert planner._post_goal_budget_complete(10, 2)
+    assert not planner._post_goal_budget_complete(10, 3)
+    assert not planner._post_goal_budget_complete(None, 0)
 
 
 def test_finish_search_runs_callbacks_then_reports_and_reconstructs(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     planner = make_planner()
     terminal = make_node(8.0, 3.0)
@@ -1008,14 +1006,11 @@ def test_finish_search_runs_callbacks_then_reports_and_reconstructs(
         11,
         planner.environment.goal,
         set(),
-        set(),
         {key: terminal},
         1,
         lambda *_: events.append("progress_callback"),
         lambda count: events.append(("expansion_callback", count)),
-        announce_bound=True,
     )
-    output = capsys.readouterr().out
 
     assert events == [
         ("expansion_callback", 17),
@@ -1023,8 +1018,428 @@ def test_finish_search_runs_callbacks_then_reports_and_reconstructs(
         "report",
         "reconstruct",
     ]
-    assert "Bound condition satisfied at expansion 17" in output
     np.testing.assert_array_equal(result[0], expected_path)
     np.testing.assert_array_equal(result[1], expected_directions)
     np.testing.assert_array_equal(result[2], expected_steers)
     assert result[3] is terminal
+
+
+def test_production_function_docstrings_use_structured_sections() -> None:
+    source_paths = (
+        Path(planner_module.__file__),
+        Path(two_queue_module.__file__),
+        Path(demo_module.__file__),
+    )
+
+    for source_path in source_paths:
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+            docstring = ast.get_docstring(function)
+            assert docstring is not None, (source_path.name, function.name)
+
+            parameters = [
+                argument.arg
+                for argument in (function.args.posonlyargs + function.args.args + function.args.kwonlyargs)
+                if argument.arg not in {"self", "cls"}
+            ]
+            if parameters:
+                assert "Args:" in docstring, (source_path.name, function.name)
+            if function.returns is not None:
+                assert "Returns:" in docstring, (source_path.name, function.name)
+
+            stack = list(function.body)
+            has_explicit_raise = False
+            while stack:
+                node = stack.pop()
+                if isinstance(
+                    node,
+                    (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+                ):
+                    continue
+                if isinstance(node, ast.Raise):
+                    has_explicit_raise = True
+                stack.extend(ast.iter_child_nodes(node))
+            if has_explicit_raise:
+                assert "Raises:" in docstring, (source_path.name, function.name)
+
+
+def test_two_queue_instance_adds_only_queue_specific_state() -> None:
+    base = make_planner(use_two_queues=False)
+    derived = make_planner(use_two_queues=True)
+
+    obsolete_names = {
+        "use_two_queues",
+        "fine_primitive_length",
+        "fine_steer_indices",
+        "_fine_collision_distances",
+    }
+    assert obsolete_names.isdisjoint(base.__dict__)
+    assert obsolete_names.isdisjoint(derived.__dict__)
+
+    derived_only = set(derived.__dict__) - set(base.__dict__)
+    assert derived_only == {
+        "coarse_heuristic_weight",
+        "queue_beta",
+        "origin_priority_factor",
+        "coarse_primitive_length",
+        "coarse_steer_indices",
+        "_coarse_collision_distances",
+        "fine_expansion_count",
+        "coarse_expansion_count",
+        "last_expansion_queue",
+    }
+
+    # OPEN queues and CLOSED sets are per-search locals rather than persistent
+    # planner state. Only the reporting counters survive after a search.
+    for transient_name in (
+        "fine_queue",
+        "coarse_queue",
+        "fine_closed",
+        "coarse_closed",
+    ):
+        assert transient_name not in derived.__dict__
+
+    assert derived.primitive_length == base.primitive_length
+    assert derived.steer_indices == base.steer_indices
+    np.testing.assert_array_equal(
+        derived._collision_distances,
+        base._collision_distances,
+    )
+
+
+@pytest.mark.parametrize(
+    ("two_queue", "expected_name"),
+    [
+        (False, "fine"),
+        (True, "two"),
+    ],
+)
+def test_main_selects_planner_class_from_two_queue_option(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    two_queue: bool,
+    expected_name: str,
+) -> None:
+    import sys
+    import hybrid_astar_main
+
+    selected: list[str] = []
+
+    class FakeProgress:
+        n = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def update(self, amount: int) -> None:
+            self.n += amount
+
+        def close(self) -> None:
+            pass
+
+    class FakePlanner:
+        planner_name = "fine"
+
+        def __init__(self, **kwargs) -> None:
+            selected.append(self.planner_name)
+            self.environment = kwargs["environment"]
+            self.vehicle = kwargs["vehicle"]
+            self.safety_margin = kwargs["safety_margin"]
+            self.integration_step = kwargs["integration_step"]
+            self.collision_check_step = kwargs["collision_check_step"]
+            self.heuristic_mode = kwargs["heuristic_mode"]
+            self.state_key_mode = kwargs["state_key_mode"]
+            self.heuristic_weight = kwargs["heuristic_weight"]
+            self.primitive_length = self.environment.planner["primitive_length"]
+            self.expansion_count = 1
+            self.unique_expanded_state_count = 1
+
+        def plan(self, start, goal, *_args, **_kwargs):
+            root = Node(*start, 0.0, None, 1, 2, 0.0)
+            terminal = Node(*goal, 1.0, root, 1, 2, 1.0)
+            path = np.asarray([start, goal], dtype=float)
+            return path, np.asarray([1, 1]), np.asarray([0.0, 0.0]), terminal
+
+        @staticmethod
+        def exact_path_length(_terminal: Node) -> float:
+            return 1.0
+
+    class FakeTwoQueuePlanner(FakePlanner):
+        planner_name = "two"
+
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.coarse_heuristic_weight = kwargs.get("coarse_heuristic_weight", self.heuristic_weight)
+            if self.coarse_heuristic_weight is None:
+                self.coarse_heuristic_weight = self.heuristic_weight
+            self.coarse_primitive_length = kwargs.get("coarse_primitive_mult", 4) * self.primitive_length
+            self.queue_beta = kwargs.get("queue_beta", 1.5)
+            self.origin_priority_factor = kwargs.get("origin_priority_factor", 2.0)
+            self.fine_expansion_count = 1
+            self.coarse_expansion_count = 0
+
+    monkeypatch.setattr(hybrid_astar_main, "HybridAStar", FakePlanner)
+    monkeypatch.setattr(hybrid_astar_main, "TwoQueueHybridAStar", FakeTwoQueuePlanner)
+    monkeypatch.setattr(hybrid_astar_main, "tqdm", FakeProgress)
+    monkeypatch.setattr(hybrid_astar_main, "save_plot", lambda *_args: None)
+    argv = [
+        "hybrid_astar_main.py",
+        "--no_animation_plot",
+        "--live_plot_every",
+        "0",
+        "--output_dir",
+        str(tmp_path),
+    ]
+    if two_queue:
+        argv.append("--two_queues")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    result = hybrid_astar_main.main(hybrid_astar_main.parse_args())
+
+    assert selected == [expected_name]
+    assert result["coarse_expansions"] == 0
+
+
+def test_parse_args_treats_primitive_length_as_a_single_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import hybrid_astar_main
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hybrid_astar_main.py",
+            "--primitive_length",
+            "0.8",
+        ],
+    )
+
+    args = hybrid_astar_main.parse_args()
+
+    assert args.primitive_length == 0.8
+    assert not hasattr(args, "enable_admissible_bound")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ([], "mp4"),
+        (["--animation_format", "gif"], "gif"),
+    ],
+)
+def test_parse_args_selects_animation_format(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    expected: str,
+) -> None:
+    import sys
+    import hybrid_astar_main
+
+    monkeypatch.setattr(sys, "argv", ["hybrid_astar_main.py", *arguments])
+
+    assert hybrid_astar_main.parse_args().animation_format == expected
+
+
+def test_parse_args_shows_final_animation_window_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import hybrid_astar_main
+
+    monkeypatch.setattr(sys, "argv", ["hybrid_astar_main.py"])
+
+    args = hybrid_astar_main.parse_args()
+
+    assert not args.no_animation_plot
+    assert not args.save_video
+
+
+def test_parse_args_disables_final_animation_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import hybrid_astar_main
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hybrid_astar_main.py", "--no_animation_plot"],
+    )
+
+    args = hybrid_astar_main.parse_args()
+
+    assert args.no_animation_plot
+    assert not args.save_video
+
+
+def test_parse_args_controls_video_saving_and_playback_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import hybrid_astar_main
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hybrid_astar_main.py",
+            "--save_video",
+            "--no_animation_plot",
+        ],
+    )
+
+    args = hybrid_astar_main.parse_args()
+
+    assert args.no_animation_plot
+    assert args.save_video
+
+
+@pytest.mark.parametrize(
+    ("suffix", "use_nvenc", "expected_encoder", "expected_codec"),
+    [
+        (".mp4", True, "h264_nvenc", "h264_nvenc"),
+        (".mp4", False, "libx264", "libx264"),
+        (".gif", None, "pillow", None),
+    ],
+)
+def test_animation_writer_selects_requested_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    use_nvenc: bool | None,
+    expected_encoder: str,
+    expected_codec: str | None,
+) -> None:
+    import hybrid_astar_main
+
+    monkeypatch.setattr(
+        hybrid_astar_main.FFMpegWriter,
+        "isAvailable",
+        classmethod(lambda _cls: True),
+    )
+
+    writer, encoder = hybrid_astar_main.animation_writer(suffix, use_nvenc=use_nvenc)
+
+    assert encoder == expected_encoder
+    if expected_codec is None:
+        assert isinstance(writer, hybrid_astar_main.PillowWriter)
+    else:
+        assert writer.codec == expected_codec
+
+
+@pytest.mark.parametrize("show", [True, False])
+def test_render_animation_only_shows_failed_save_when_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    show: bool,
+) -> None:
+    import hybrid_astar_main
+
+    class FailingAnimation:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        @staticmethod
+        def save(*_args, **_kwargs) -> None:
+            raise RuntimeError("encoder failed")
+
+    planner = make_planner()
+    environment = planner.environment
+    path = np.asarray([environment.start, environment.goal], dtype=float)
+    show_calls = []
+    monkeypatch.setattr(hybrid_astar_main, "FuncAnimation", FailingAnimation)
+    monkeypatch.setattr(
+        hybrid_astar_main,
+        "animation_writer",
+        lambda _suffix: (object(), "libx264"),
+    )
+    monkeypatch.setattr(
+        hybrid_astar_main.plt,
+        "show",
+        lambda **kwargs: show_calls.append(kwargs),
+    )
+
+    with pytest.warns(RuntimeWarning, match="Saving the animation failed"):
+        hybrid_astar_main.render_animation(
+            tmp_path / "animation.mp4",
+            planner,
+            environment,
+            path,
+            np.asarray([1, 1]),
+            np.asarray([0.0, 0.0]),
+            save_video=True,
+            show=show,
+        )
+
+    assert show_calls == ([{"block": True}] if show else [])
+
+
+def test_render_animation_does_not_save_video_unless_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hybrid_astar_main
+
+    class PlaybackOnlyAnimation:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        @staticmethod
+        def save(*_args, **_kwargs) -> None:
+            pytest.fail("animation.save should not be called")
+
+    planner = make_planner()
+    environment = planner.environment
+    path = np.asarray([environment.start, environment.goal], dtype=float)
+    show_calls = []
+    monkeypatch.setattr(hybrid_astar_main, "FuncAnimation", PlaybackOnlyAnimation)
+    monkeypatch.setattr(
+        hybrid_astar_main.plt,
+        "show",
+        lambda **kwargs: show_calls.append(kwargs),
+    )
+
+    hybrid_astar_main.render_animation(
+        tmp_path / "animation.mp4",
+        planner,
+        environment,
+        path,
+        np.asarray([1, 1]),
+        np.asarray([0.0, 0.0]),
+        save_video=False,
+        show=True,
+    )
+
+    assert show_calls == [{"block": True}]
+
+
+def test_nvenc_available_requires_successful_encoder_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hybrid_astar_main
+
+    class ProbeResult:
+        returncode = 0
+
+    monkeypatch.setattr(
+        hybrid_astar_main.FFMpegWriter,
+        "isAvailable",
+        classmethod(lambda _cls: True),
+    )
+    monkeypatch.setattr(
+        hybrid_astar_main.FFMpegWriter,
+        "bin_path",
+        classmethod(lambda _cls: "/test/ffmpeg"),
+    )
+    monkeypatch.setattr(
+        hybrid_astar_main.subprocess,
+        "run",
+        lambda *_args, **_kwargs: ProbeResult(),
+    )
+    hybrid_astar_main.nvenc_available.cache_clear()
+
+    try:
+        assert hybrid_astar_main.nvenc_available()
+    finally:
+        hybrid_astar_main.nvenc_available.cache_clear()
