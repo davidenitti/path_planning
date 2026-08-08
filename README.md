@@ -55,7 +55,7 @@ To find a solution for `parking2_hard`, use a zero safety margin and a smaller
 python hybrid_astar_main.py --env parking2_hard --safety_margin 0.0 --xy_resolution 0.1
 ```
 
-for a smoother path use `--steering_change_penalty 0.5`:
+For a smoother path, use `--steering_change_penalty 0.5`:
 
 ```bash
 python hybrid_astar_main.py --env parking2_hard --safety_margin 0.0 --xy_resolution 0.1 --steering_change_penalty 0.5
